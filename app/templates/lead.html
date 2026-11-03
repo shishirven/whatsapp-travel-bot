@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="page lead-detail">
+  <p class="back"><a href="/staff">All leads</a></p>
+  <header class="page-head">
+    <h1>{{ lead.contact_name or lead.profile_name or "Unnamed lead" }}</h1>
+    <p>
+      <span class="score {{ lead.score }}">{{ lead.score }}</span>
+      {{ lead.score_reason }}
+    </p>
+  </header>
+  {% if lead.handoff %}
+  <p class="callout">{{ handoff_label or "Handed to sales" }}</p>
+  {% endif %}
+
+  <div class="detail-grid">
+    <section>
+      <h2>Transcript</h2>
+      <ol class="transcript">
+        {% for message in messages %}
+        <li class="bubble {{ 'out' if message.direction == 'out' else 'in' }}">
+          <span class="who">{{ "Maya" if message.direction == "out" else "Traveller" }}</span>
+          <p>{{ message.body }}</p>
+          <time>{{ message.created_at }}</time>
+        </li>
+        {% endfor %}
+      </ol>
+    </section>
+    <section>
+      <h2>Structured lead</h2>
+      <dl class="facts">
+        <div><dt>WhatsApp id</dt><dd>{{ lead.wa_id }}</dd></div>
+        <div><dt>Profile name</dt><dd>{{ lead.profile_name or "—" }}</dd></div>
+        <div><dt>Destination</dt><dd>{{ lead.destination or "—" }}</dd></div>
+        <div><dt>Dates</dt><dd>{{ lead.travel_dates or "—" }}</dd></div>
+        <div><dt>Group</dt><dd>{{ lead.group_size if lead.group_size is not none else "—" }}</dd></div>
+        <div><dt>Budget</dt><dd>{% if lead.budget_usd is not none %}${{ "%.0f"|format(lead.budget_usd) }}{% else %}—{% endif %}</dd></div>
+        <div><dt>Booking name</dt><dd>{{ lead.contact_name or "—" }}</dd></div>
+        <div><dt>Ad</dt><dd>{{ lead.ad_headline or "—" }}</dd></div>
+        <div><dt>Campaign</dt><dd>{{ lead.campaign or "—" }}</dd></div>
+        <div><dt>Ad id</dt><dd>{{ lead.ad_id or "—" }}</dd></div>
+        <div><dt>Channel</dt><dd>{{ lead.source }}{% if lead.ad_source %} · {{ lead.ad_source }}{% endif %}</dd></div>
+      </dl>
+      <h2>Latest extraction JSON</h2>
+      <pre class="json">{{ extracted }}</pre>
+    </section>
+  </div>
+</section>
+{% endblock %}

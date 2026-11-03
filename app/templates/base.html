@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · Horizon Sample Travel</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Horizon Sample Travel</a>
+    <nav>
+      <a href="/" {% if active == "chat" %}aria-current="page"{% endif %}>Simulator</a>
+      <a href="/staff" {% if active == "staff" %}aria-current="page"{% endif %}>Leads</a>
+    </nav>
+    <span class="pill">Fictional demo</span>
+  </header>
+  {% block body %}{% endblock %}
+</body>
+</html>
