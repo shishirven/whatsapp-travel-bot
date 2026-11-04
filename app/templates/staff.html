@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="page">
+  <header class="page-head">
+    <h1>Leads</h1>
+    <p>Cold: no destination. Warm: destination known, checklist incomplete or budget under $800. Hot: destination, dates, group size, budget of at least $800, and a name. Asking for a person hands the chat to sales at any score.</p>
+  </header>
+  {% if not leads %}
+  <p class="empty">No leads yet. <a href="/">Open the simulator</a> or POST a WhatsApp webhook.</p>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Score</th>
+          <th>Name</th>
+          <th>Destination</th>
+          <th>Dates</th>
+          <th>Group</th>
+          <th>Budget</th>
+          <th>Ad</th>
+          <th>Source</th>
+          <th>Status</th>
+          <th>Last message</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for lead in leads %}
+        <tr>
+          <td><span class="score {{ lead.score }}">{{ lead.score }}</span></td>
+          <td><a href="/staff/{{ lead.id }}">{{ lead.contact_name or lead.profile_name or "Unnamed" }}</a></td>
+          <td>{{ lead.destination or "—" }}</td>
+          <td>{{ lead.travel_dates or "—" }}</td>
+          <td>{{ lead.group_size if lead.group_size is not none else "—" }}</td>
+          <td>
+            {% if lead.budget_usd is not none %}${{ "%.0f"|format(lead.budget_usd) }}{% else %}—{% endif %}
+          </td>
+          <td>{{ lead.campaign or lead.ad_id or "—" }}</td>
+          <td>{{ lead.source }}</td>
+          <td>{% if lead.handoff %}With sales{% else %}Qualifying{% endif %}</td>
+          <td class="last">{{ lead.last_message or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  <p class="banner">{{ banner }}</p>
+</section>
+{% endblock %}
