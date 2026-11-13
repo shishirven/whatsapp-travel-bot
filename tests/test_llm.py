@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
+from app.business import load_business
 from app.extract import extract_facts
-from app.knowledge import prompt_block
 from app.llm import (
     QUALIFY_TOOL,
     AnthropicQualifier,
@@ -11,67 +11,79 @@ from app.llm import (
     parse_qualification,
     to_api_messages,
 )
+from app.scoring import FACT_KEYS
 from app.service import build_system
 
 
-def test_sample_prompt_is_labelled_fictional():
-    text = prompt_block()
-    assert "SAMPLE DATA" in text
-    assert "not a real agency" in text
-    assert "[SAMPLE]" in text
+def test_prompt_lists_job_types_and_hides_prices():
+    text = load_business().prompt_block()
+    assert "Northside Electrical" in text
+    assert "fault" in text
+    assert "Newtown" in text
+    assert "Do not mention prices" in text
+    assert "$" not in text
 
 
-def test_extract_full_sentence_and_ignore_a_false_name():
+def test_extract_a_job_and_ignore_a_false_name():
     facts = extract_facts(
-        "We're 4 people going to Bali June 12-19 2026. Budget is 4000. My name is Jamie Lee."
+        "The safety switch keeps tripping in Newtown. Not urgent. "
+        "It trips when the oven is on. My name is Jamie Lee."
     )
-    assert facts["destination"] == "Bali, Indonesia"
-    assert facts["travel_dates"] == "June 12-19 2026"
-    assert facts["group_size"] == 4
-    assert facts["budget_usd"] == 4000
+    assert facts["job_type"] == "fault"
+    assert facts["suburb"] == "Newtown"
+    assert facts["urgency"] == "planned"
+    assert "oven" in facts["description"]
     assert facts["contact_name"] == "Jamie Lee"
 
-    looking = extract_facts("I'm looking at Bali")
+    looking = extract_facts("I'm looking at a switchboard in Marrickville")
     assert looking["contact_name"] is None
-    assert looking["destination"] == "Bali, Indonesia"
-
-    about = extract_facts("about 4 people")
-    assert about["group_size"] == 4
-    assert about["budget_usd"] is None
+    assert looking["job_type"] == "switchboard"
+    assert looking["suburb"] == "Marrickville"
 
 
-def test_dates_accept_a_rough_month_and_a_numeric_range():
-    assert extract_facts("in June 2026")["travel_dates"] == "in June 2026"
-    assert extract_facts("12-19 June")["travel_dates"].lower() == "12-19 june"
-    assert extract_facts("next month")["travel_dates"] == "next month"
+def test_no_power_is_an_emergency_fault_and_an_unknown_suburb_is_kept():
+    facts = extract_facts("No power in Bondi, sparks in the meter box right now")
+    assert facts["job_type"] == "fault"
+    assert facts["urgency"] == "emergency"
+    assert facts["suburb"] == "Bondi"
 
 
-def test_rule_based_asks_one_question_then_summarises():
+def test_preferred_time_and_a_short_note_is_not_a_description():
+    assert extract_facts("tomorrow morning")["preferred_time"] == "tomorrow morning"
+    assert extract_facts("Newtown")["description"] is None
+
+
+def test_rule_based_asks_one_question_then_summarises_without_a_price():
     qualifier = RuleBasedQualifier()
-    first = qualifier.qualify(_turn("We're thinking Bali", known={}))
-    assert first.destination == "Bali, Indonesia"
-    assert "sample price" in first.reply
+    first = qualifier.qualify(_turn("The safety switch keeps tripping"))
+    assert first.job_type == "fault"
     assert first.reply.count("?") == 1
+    assert "$" not in first.reply
 
-    known = {"destination": "Bali, Indonesia", "travel_dates": None, "group_size": None, "budget_usd": None, "contact_name": None}
+    known = {key: None for key in FACT_KEYS}
+    known.update({"job_type": "fault", "suburb": "Newtown"})
     done = qualifier.qualify(
         _turn(
-            "June 12-19 2026, 2 people, budget is 2500, my name is Sam Rivera",
+            "Not urgent. The switch trips when the oven is on. My name is Sam Rivera",
             known=known,
         )
     )
     assert done.contact_name == "Sam Rivera"
     assert "Sam Rivera" in done.reply
     assert done.request_human is False
+    assert "$" not in done.reply
 
 
-def test_tool_schema_is_strict():
+def test_tool_schema_is_strict_and_has_no_price_field():
     schema = QUALIFY_TOOL["input_schema"]
+    assert QUALIFY_TOOL["name"] == "record_job_intake"
     assert QUALIFY_TOOL["strict"] is True
     assert schema["additionalProperties"] is False
     assert "reply" in schema["required"]
     assert "request_human" in schema["required"]
-    assert "destination" in schema["required"]
+    assert "job_type" in schema["required"]
+    assert "budget_usd" not in schema["properties"]
+    assert "destination" not in schema["properties"]
 
 
 def test_api_messages_start_with_a_user_turn():
@@ -79,7 +91,7 @@ def test_api_messages_start_with_a_user_turn():
         [
             {"role": "assistant", "content": "Hi"},
             {"role": "assistant", "content": "Still here"},
-            {"role": "user", "content": "Bali"},
+            {"role": "user", "content": "Newtown"},
         ]
     )
     assert messages[0]["role"] == "user"
@@ -91,27 +103,31 @@ def test_api_messages_start_with_a_user_turn():
 def test_parse_tool_call_and_text_fallback():
     tool = SimpleNamespace(
         type="tool_use",
-        name="record_lead_qualification",
+        name="record_job_intake",
         input={
-            "reply": "June works.",
+            "reply": "Newtown is covered.",
             "request_human": False,
-            "destination": "Japan",
-            "travel_dates": None,
-            "group_size": "2",
-            "budget_usd": 3100,
+            "job_type": "switchboard",
+            "suburb": "Newtown",
+            "urgency": "EMERGENCY",
+            "description": "  ",
+            "preferred_time": None,
             "contact_name": "  ",
         },
     )
     draft = parse_qualification(SimpleNamespace(content=[tool]))
-    assert draft.reply == "June works."
-    assert draft.destination == "Japan"
-    assert draft.group_size == 2
-    assert draft.budget_usd == 3100
+    assert draft.reply == "Newtown is covered."
+    assert draft.job_type == "switchboard"
+    assert draft.suburb == "Newtown"
+    assert draft.urgency == "emergency"
+    assert draft.description is None
     assert draft.contact_name is None
 
-    prose = parse_qualification(SimpleNamespace(content=[SimpleNamespace(type="text", text="Hello there")]))
+    prose = parse_qualification(
+        SimpleNamespace(content=[SimpleNamespace(type="text", text="Hello there")])
+    )
     assert prose.reply == "Hello there"
-    assert prose.destination is None
+    assert prose.job_type is None
     assert prose.raw == {"unstructured": True}
 
 
@@ -123,14 +139,15 @@ def test_anthropic_qualifier_uses_auto_tool_choice(monkeypatch):
             captured.update(kwargs)
             block = SimpleNamespace(
                 type="tool_use",
-                name="record_lead_qualification",
+                name="record_job_intake",
                 input={
-                    "reply": "Where to?",
+                    "reply": "Which suburb?",
                     "request_human": False,
-                    "destination": None,
-                    "travel_dates": None,
-                    "group_size": None,
-                    "budget_usd": None,
+                    "job_type": None,
+                    "suburb": None,
+                    "urgency": None,
+                    "description": None,
+                    "preferred_time": None,
                     "contact_name": None,
                 },
             )
@@ -143,7 +160,7 @@ def test_anthropic_qualifier_uses_auto_tool_choice(monkeypatch):
     )
     draft = qualifier.qualify(_turn("Hi", known={}))
     assert isinstance(draft, QualificationDraft)
-    assert draft.reply == "Where to?"
+    assert draft.reply == "Which suburb?"
     # Sonnet 5.5 returns 400 for tool_choice any/tool. Auto + strict is the supported path.
     assert captured["tool_choice"] == {"type": "auto"}
     assert captured["tools"][0]["strict"] is True
@@ -152,26 +169,29 @@ def test_anthropic_qualifier_uses_auto_tool_choice(monkeypatch):
     assert captured["messages"][0]["role"] == "user"
 
 
-def test_system_prompt_treats_the_ad_as_a_hint():
+def test_system_prompt_treats_the_ad_as_a_hint_and_hides_prices():
     system = build_system(
-        {"destination": None},
+        {"job_type": None},
         {
-            "ad_id": "ad_bali_summer_01",
-            "headline": "7 days in Bali from $1,299",
-            "campaign": "meta_bali_summer_2026",
+            "ad_id": "ad_fault_01",
+            "headline": "Emergency electrician — Inner West",
+            "campaign": "meta_emergency_electrician",
             "source": "facebook",
         },
         "Alex",
     )
-    assert "SAMPLE DATA" in system
-    assert "not a confirmed destination" in system
-    assert "record_lead_qualification" in system
-    assert "ad_bali_summer_01" in system
+    assert "Northside Electrical" in system
+    assert "Do not mention prices" in system
+    assert "not a confirmed job" in system
+    assert "record_job_intake" in system
+    assert "ad_fault_01" in system
+    assert "call 000" in system
+    assert "$" not in system
 
 
-def _turn(text, known):
-    base = {key: None for key in ("destination", "travel_dates", "group_size", "budget_usd", "contact_name")}
-    base.update(known)
+def _turn(text, known=None):
+    base = {key: None for key in FACT_KEYS}
+    base.update(known or {})
     return TurnContext(
         history=[{"role": "user", "content": text}],
         known=base,

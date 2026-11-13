@@ -1,53 +1,55 @@
-# Horizon Sample Travel — WhatsApp lead bot
+# Northside Electrical — WhatsApp assistant for tradies
 
-A small lead-qualification bot for a fictional travel agency. A traveller taps a Meta (Facebook or Instagram) click-to-WhatsApp ad, Maya answers in the chat, asks for the trip details a sales desk actually needs, and hands the thread over when the lead is hot or when the person asks for a human.
+A WhatsApp assistant for an Australian trade business. Electricians first: a customer messages the business number, the bot collects the job (type, suburb, urgency, description, photos, a preferred time, and a name), offers three free visit slots, and hands the thread to the desk when the job is urgent or a good fit. Draft price ranges stay on the staff desk until a person sends them.
 
-Phase 1 runs entirely on your machine. The chat page behaves like WhatsApp. `POST /webhook` already accepts the [WhatsApp Cloud API](https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/payload-examples) payload, so a real number can be attached later without rewriting the bot.
-
-Horizon Sample Travel is not a real agency. Packages, prices, and ad ids under `app/knowledge.py` are **sample data**.
+The trade is config. Edit `config/business.json` — business name, service-area suburbs, job types, hours, and draft price bands — and the same app serves another trade. Northside Electrical in that file is sample config, not a live tariff.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-  Ad[Meta click-to-WhatsApp ad]
-  Sim[Local chat simulator]
   WA[WhatsApp Cloud API]
-  Ad --> Sim
-  Ad --> WA
-  Sim --> ChatAPI["POST /api/chat"]
+  Sim[Local chat simulator]
   WA --> Hook["GET and POST /webhook"]
-  ChatAPI --> Svc[Conversation service]
-  Hook --> Svc
+  Sim --> ChatAPI["POST /api/chat"]
+  Hook --> Svc[Conversation service]
+  ChatAPI --> Svc
+  Svc --> Media[Graph media download]
+  Media --> Whisper[Whisper transcriber]
   Svc --> Qualifier[Qualifier]
   Qualifier --> Claude["Claude tool call"]
   Qualifier --> Mock[Offline qualifier]
   Svc --> Score["score_lead in code"]
-  Svc --> DB[(SQLite)]
-  Svc --> Gateway[MessagingGateway]
-  Gateway --> SimOut[SimulatedGateway]
-  Gateway --> Cloud[WhatsAppCloudGateway]
-  DB --> Staff["/staff leads and transcripts"]
-  Score -->|hot, or asks for a person| Handoff[Handoff flag and log]
+  Svc --> Quote[Draft quote from config]
+  Svc --> Cal[Calendar interface]
+  Cal --> Google[Google Calendar]
+  Cal --> Local[Local bookings]
+  Svc --> Gate[Messaging gateway]
+  Gate --> Text["Free-form text inside 24h"]
+  Gate --> Tpl["Template stub outside 24h"]
+  Score --> Desk["/staff job cards"]
+  Quote --> Desk
 ```
 
-The messaging layer is an interface in `app/messaging.py`. `SimulatedGateway` only mints an id; the transcript is stored by the service. `WhatsAppCloudGateway` builds the real Graph API request and sends it when `WHATSAPP_TOKEN` and `WHATSAPP_PHONE_NUMBER_ID` are set. Until then `send_text` raises `NotImplementedError` with the TODO still open.
-
-Claude extracts facts by calling `record_lead_qualification` (strict tool use). **Scoring is not left to the model.** `app/scoring.py` is the rule, so the boundary of a hot lead is something you can change and test without re-prompting.
+Scoring is not left to the model. `app/scoring.py` decides hot, warm, and cold from the business config.
 
 | Score | Rule |
 | --- | --- |
-| Cold | No destination yet |
-| Warm | Destination is known, but dates, group size, budget, or name is still missing — or the budget is under $800 |
-| Hot | Destination, dates, group size, budget of at least $800, and a booking name |
+| Cold | No job type yet |
+| Warm | A job type is known, but the suburb is outside the service area, or urgency, description, or a name is still missing |
+| Hot | An emergency inside the service area, or a configured job type with an in-area suburb, urgency, description, and a name |
 
-Handoff happens when the score is hot, or when the traveller asks for a person, at any score. After that Maya stops extracting and the thread is marked for sales. One conversation is kept per phone number.
+Handoff happens when the score is hot, or when the customer asks for a person, at any score. After that the bot stops extracting. A slot the customer already picked can still be booked. One conversation is kept per phone number.
 
-Claude Sonnet 5.5 does not accept a forced tool choice (`tool_choice` of `any` or `tool` returns 400). The call uses `tool_choice: auto`, a strict schema, and a prompt that tells Maya to call the tool every turn. `thinking` is `between_tools` so a chat turn does not do a long hidden reasoning pass (`disabled` is also rejected on this model). If the model replies in plain text anyway, that text is sent and no new facts are written.
+Quotes are a min–max range from `config/business.json`. They are saved as drafts. The bot never puts a dollar amount in a customer reply. Someone on `/staff` approves the draft, and only then is it sent.
 
-With no API key, `LLM_PROVIDER` defaults to `mock`: a small keyword extractor in `app/extract.py`. It is there so you can click through the product. It is not the reader you ship.
+Visit times come from `Calendar`. With Google credentials that is the Calendar API (service account or OAuth). Without them, bookings live in SQLite so the simulator still works. The customer is offered the next three free slots inside the configured hours, and the slot they pick is booked.
 
-## Run it
+Claude Sonnet 5.5 does not accept a forced tool choice (`tool_choice` of `any` or `tool` returns 400). The call uses `tool_choice: auto`, a strict schema, and a prompt that tells the assistant to call `record_job_intake` every turn. `thinking` is `between_tools`. If the model replies in plain text anyway, that text is sent and no new facts are written. Any sentence that still contains a price is removed before send.
+
+With no API key, `LLM_PROVIDER` defaults to `mock`: a keyword extractor in `app/extract.py`. It is there so you can click through the product. It is not the reader you ship.
+
+## Run it locally
 
 ```bash
 python -m venv .venv
@@ -57,11 +59,11 @@ cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
-On Windows, activate with `.venv\Scripts\activate` instead of `source`.
+On Windows, activate with `.venv\Scripts\activate`.
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Pick a sample ad, chat with Maya, and watch the qualification panel. The sales view is [http://127.0.0.1:8000/staff](http://127.0.0.1:8000/staff). Interactive API docs are at `/docs`.
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Pick a sample ad, chat, and watch the job card. The desk is [http://127.0.0.1:8000/staff](http://127.0.0.1:8000/staff). Interactive API docs are at `/docs`.
 
-To answer with Claude, set this in `.env` and restart:
+To answer with Claude:
 
 ```bash
 LLM_PROVIDER=anthropic
@@ -70,7 +72,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 The default model is `claude-sonnet-5-5` (`ANTHROPIC_MODEL`).
 
-Tests do not call Anthropic. They pass a fake client or the offline qualifier:
+Tests do not call Anthropic, OpenAI, Meta, or Google. They pass fakes:
 
 ```bash
 pytest
@@ -79,29 +81,91 @@ pytest
 ### Docker
 
 ```bash
-docker build -t horizon-leads .
-docker run --rm -p 8000:8000 --env-file .env -v horizon-data:/data horizon-leads
+docker build -t tradie-whatsapp .
+docker run --rm -p 8000:8000 --env-file .env -v tradie-data:/data tradie-whatsapp
 ```
 
-The image stores SQLite at `/data/travel.db`. Leave `SQLITE_PATH` commented out in `.env` so that path is not overridden.
+The image stores SQLite at `/data/tradie.db`. Leave `SQLITE_PATH` commented out in `.env` so that path is not overridden. The process listens on `PORT` (8000 if unset).
 
-## Layout
+## Render
 
-| Path | What it is |
+`render.yaml` is a Docker web service on the **Starter** plan. Starter is paid and does not sleep, so Meta can reach the webhook. A free web service spins down and drops verification and message retries.
+
+The health check is `GET /api/health`. A 1 GB disk is mounted at `/data` for SQLite and downloaded photos and voice notes.
+
+1. Push this repo to GitHub.
+2. In Render, create a Blueprint and point it at the repo. Render reads `render.yaml`.
+3. Fill the environment variables it prompts for (see the table below). `STAFF_SESSION_SECRET` is generated.
+4. Deploy. The service URL is `https://<service>.onrender.com`.
+5. In Meta, set the callback URL to `https://<service>.onrender.com/webhook`.
+
+`MESSAGING_PROVIDER` is `whatsapp` and `LLM_PROVIDER` is `anthropic` in the blueprint. Until `WHATSAPP_TOKEN` and `PHONE_NUMBER_ID` are set, outbound sends are skipped and logged; inbound messages are still stored.
+
+## Environment variables
+
+| Variable | Purpose |
 | --- | --- |
-| `app/main.py` | FastAPI routes: simulator, staff pages, webhook |
-| `app/service.py` | One inbound turn: store, qualify, score, maybe hand off, deliver |
-| `app/llm.py` | Claude tool call, and the offline qualifier |
-| `app/scoring.py` | Hot / warm / cold and the handoff decision |
-| `app/extract.py` | Keyword stand-in used only offline |
-| `app/knowledge.py` | Fictional packages and ad ids |
-| `app/messaging.py` | Gateway interface, Cloud API stub, webhook parser |
-| `app/db.py` | SQLite: conversations, messages, leads |
-| `app/templates/` | Chat simulator and staff desk |
+| `WHATSAPP_TOKEN` | Permanent system-user token for the Cloud API |
+| `PHONE_NUMBER_ID` | WhatsApp phone number id. `WHATSAPP_PHONE_NUMBER_ID` is also accepted |
+| `VERIFY_TOKEN` | String you type into the Meta webhook form. `WHATSAPP_VERIFY_TOKEN` is also accepted |
+| `APP_SECRET` | Meta app secret. When set, `POST /webhook` must carry a valid `X-Hub-Signature-256`. `WHATSAPP_APP_SECRET` is also accepted |
+| `ANTHROPIC_API_KEY` | Claude. Required when `LLM_PROVIDER=anthropic` |
+| `ANTHROPIC_MODEL` | Defaults to `claude-sonnet-5-5` |
+| `OPENAI_API_KEY` | Whisper. Voice notes are stored without a transcript until this is set |
+| `WHISPER_MODEL` | Defaults to `whisper-1` |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Service-account key JSON, as one line. Share the calendar with that account's email |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Or a path to the same JSON file |
+| `GOOGLE_OAUTH_CLIENT_ID` | OAuth client, if you are not using a service account |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | OAuth client secret |
+| `GOOGLE_OAUTH_REFRESH_TOKEN` | Refresh token with Calendar scope |
+| `GOOGLE_CALENDAR_ID` | Calendar to read and write. Required when either Google path is set |
+| `STAFF_USERNAME` | Desk login. Both username and password must be set or `/staff` stays open |
+| `STAFF_PASSWORD` | Desk password |
+| `STAFF_SESSION_SECRET` | Signs the session cookie. Render generates one |
+| `BUSINESS_CONFIG` | Optional path to a different `business.json` |
+| `SQLITE_PATH` | Defaults to `data/tradie.db`. On Render, `/data/tradie.db` |
+| `MESSAGING_PROVIDER` | `simulated` or `whatsapp` |
+| `LLM_PROVIDER` | `mock` or `anthropic` |
+
+Use either the service account or the OAuth trio. If both are set, the service account wins. If neither is set, slots are booked into SQLite only.
+
+## Meta setup you do by hand
+
+The app cannot create a Meta business or approve templates.
+
+1. **Business verification.** In [Meta Business Manager](https://business.facebook.com/), create or claim the business and complete business verification. An unverified business cannot use a production WhatsApp number for long.
+2. **App and WhatsApp product.** In [Meta for Developers](https://developers.facebook.com/), create an app, add WhatsApp, and attach a WhatsApp Business Account and a phone number. Copy the phone number id into `PHONE_NUMBER_ID`.
+3. **Token.** Create a system user with the WhatsApp permission and a permanent token. Put it in `WHATSAPP_TOKEN`. A temporary dashboard token expires.
+4. **App secret.** Copy the app secret into `APP_SECRET`. `POST /webhook` then rejects any body whose `X-Hub-Signature-256` is not `sha256=` plus HMAC-SHA256 of the raw body.
+5. **Webhook.** Callback URL `https://<your-host>/webhook`, verify token equal to `VERIFY_TOKEN`. Subscribe the app to the **messages** field. Meta's handshake is `GET /webhook?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...`; the response body is the challenge as plain text.
+6. **Templates.** Outside the 24-hour window the app sends template names `booking_confirmation` and `quote_followup`. Those are stubs. Create and approve templates with those names in WhatsApp Manager, or change the constants in `app/window.py` (they are marked TODO) to the approved names. Until then, an outside-window send is rejected by Meta and the quote stays a draft if the API errors.
+
+Status callbacks (`delivered`, `read`) are acknowledged and ignored. The same message id posted twice is stored once.
+
+## Google Calendar you do by hand
+
+1. In Google Cloud, enable the Calendar API.
+2. Create a service account and download the JSON. Put the JSON on one line in `GOOGLE_SERVICE_ACCOUNT_JSON`, or mount the file and set `GOOGLE_APPLICATION_CREDENTIALS`.
+3. In Google Calendar, share the tradie's calendar with the service-account email, with permission to change events.
+4. Set `GOOGLE_CALENDAR_ID` to that calendar's id.
+
+OAuth is the other path: a client id, secret, and refresh token that already has `https://www.googleapis.com/auth/calendar`. No browser flow runs inside the app.
+
+## Staff desk
+
+`/staff` lists job cards: type, suburb, urgency, description, photos, voice-note transcript and summary, the offered or booked visit, and the draft quote. **Approve and send quote** is the only way a price leaves the building.
+
+Set `STAFF_USERNAME` and `STAFF_PASSWORD` before the Render URL is shared. With both set, every `/staff` page and the approve action require a session cookie. With either empty, the desk is open and a warning is logged — that is the local simulator only.
+
+## 24-hour window
+
+WhatsApp allows free-form replies for 24 hours after the customer's last message. A reply to an inbound message is inside that window and is sent as text. A staff quote (or a booking confirmation) sent after the window has closed uses the template stub instead of free text. Session replies that somehow fall outside the window are held, not sent as free text.
+
+## Voice notes and photos
+
+Audio and image messages are downloaded from the Graph API (`GET /{media-id}`, then `GET` the returned URL, both with the bearer token). Audio is transcribed through `Transcriber`. `OpenAIWhisperTranscriber` posts to `https://api.openai.com/v1/audio/transcriptions`. Swap that class to change providers. The transcript and a one-sentence summary are stored on the job card, and the transcript is what the qualifier reads. Photos are saved under the data directory and linked from the job card.
 
 ## Try the webhook without Meta
-
-This is the same shape Meta posts when someone messages the business number from an ad. `source_id` matches a sample ad, so the lead is tagged with that campaign.
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/webhook \
@@ -114,23 +178,14 @@ curl -s -X POST http://127.0.0.1:8000/webhook \
         "field": "messages",
         "value": {
           "messaging_product": "whatsapp",
-          "metadata": {
-            "display_phone_number": "15550001111",
-            "phone_number_id": "PHONE_ID"
-          },
+          "metadata": {"display_phone_number": "15550001111", "phone_number_id": "PHONE_ID"},
           "contacts": [{"profile": {"name": "Jamie"}, "wa_id": "15551230000"}],
           "messages": [{
             "from": "15551230000",
             "id": "wamid.DEMO1",
             "timestamp": "1762000000",
             "type": "text",
-            "text": {"body": "We are 4 people going to Bali June 12-19 2026. Budget is 4000. My name is Jamie Lee."},
-            "referral": {
-              "source_url": "https://fb.me/bali",
-              "source_id": "ad_bali_summer_01",
-              "source_type": "ad",
-              "headline": "7 days in Bali from $1,299"
-            }
+            "text": {"body": "The safety switch keeps tripping in Newtown. Not urgent. It trips when the oven is on. My name is Jamie Lee."}
           }]
         }
       }]
@@ -138,38 +193,31 @@ curl -s -X POST http://127.0.0.1:8000/webhook \
   }'
 ```
 
-Then refresh `/staff`. Meta also sends status callbacks (`delivered`, `read`); those are acknowledged and ignored. The same `id` posted twice is stored once.
+Then open `/staff`. With `APP_SECRET` set, compute `X-Hub-Signature-256` or the POST is rejected with 403.
 
-The verify handshake Meta uses when you save the webhook is `GET /webhook?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...`. The response body is the challenge as plain text.
+## Layout
 
-## Connecting real WhatsApp
+| Path | What it is |
+| --- | --- |
+| `render.yaml` | Render Docker web service, Starter plan, health check, disk |
+| `config/business.json` | Trade, suburbs, hours, job types, draft price bands, sample ads |
+| `app/main.py` | Simulator, staff desk and login, quote approval, webhook |
+| `app/service.py` | One inbound turn: store, media, book, qualify, score, deliver |
+| `app/scoring.py` | Hot / warm / cold and the handoff decision |
+| `app/quotes.py` | Draft ranges and the price scrubber |
+| `app/booking.py` | Slot finder and the calendar interface |
+| `app/window.py` | 24-hour window and template-name stubs |
+| `app/media.py` | Graph download and the Whisper transcriber |
+| `app/llm.py` | Claude tool call, and the offline qualifier |
+| `app/messaging.py` | Gateway, signature check, webhook parser |
 
-1. In [Meta for Developers](https://developers.facebook.com/), create an app, add the WhatsApp product, and note the **phone number id** and a **token**. A temporary token is enough to try. A system-user token is what you keep.
-2. Put them in `.env`:
+## What you still do yourself
 
-   ```bash
-   MESSAGING_PROVIDER=whatsapp
-   WHATSAPP_TOKEN=...
-   WHATSAPP_PHONE_NUMBER_ID=...
-   WHATSAPP_VERIFY_TOKEN=horizon-sample-verify
-   WHATSAPP_APP_SECRET=...
-   ```
+- Meta business verification, the phone number, the permanent token, and the webhook subscription to **messages**
+- Approved template names for `booking_confirmation` and `quote_followup`
+- Anthropic and OpenAI keys
+- A Google calendar shared with the service account, or an OAuth refresh token
+- Staff username and password
+- Your own business name, suburbs, job types, hours, and price bands in `config/business.json`
 
-   `WHATSAPP_APP_SECRET` is the app secret. When it is set, `POST /webhook` must carry a valid `X-Hub-Signature-256`. Leave it empty only on your machine.
-3. Expose the app on public HTTPS (ngrok, or the Docker host). In the WhatsApp configuration, set the callback URL to `https://<your-host>/webhook` and the verify token to the same string as `WHATSAPP_VERIFY_TOKEN`. Subscribe to the **messages** field.
-4. Restart. An inbound Cloud API message follows the same path as the simulator. The reply is `POST`ed to `https://graph.facebook.com/v21.0/{phone-number-id}/messages`.
-
-Still to do before this is a production inbox — the notes live on `WhatsAppCloudGateway` in `app/messaging.py`:
-
-- Outside the 24-hour customer-care window, WhatsApp requires a pre-approved **template** message. This demo only sends session text.
-- Acknowledge the webhook and send from a queue. The demo answers inside the request. Meta retries when you return a non-200, and a retry of a message id we already stored will not send again.
-- Do not log message bodies. The transcript is in SQLite; logs should stay limited to ids and scores.
-- Put `/staff` behind a login before anyone but you can open the URL. There is no auth in this demo.
-- Campaign names are **not** in Meta's webhook. `referral.source_id` is the ad id. This app looks that id up in `SAMPLE_ADS`. A real desk would look it up in its own ad catalog.
-
-## What this demo leaves out
-
-- After handoff, Maya does not keep qualifying. Sales owns the thread.
-- The offline qualifier is keywords. Typos and phrasing it does not know stay unextracted; Claude is the reader that handles those.
-- The $800 floor and the five required fields are constants in `app/scoring.py`, not a trained model.
-- No media, no WhatsApp templates, no payments.
+There is no Twilio and no n8n in this app.

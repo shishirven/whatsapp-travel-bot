@@ -1,4 +1,4 @@
-"""SQLite storage for conversations, messages, and one lead per conversation.
+"""SQLite storage for conversations, messages, and one job per conversation.
 
 The connection is opened per call so FastAPI's threadpool does not share a
 sqlite3 connection across threads.
@@ -6,6 +6,7 @@ sqlite3 connection across threads.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -46,26 +47,45 @@ CREATE INDEX IF NOT EXISTS idx_messages_conversation
 CREATE TABLE IF NOT EXISTS leads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL UNIQUE REFERENCES conversations(id),
-    destination TEXT,
-    travel_dates TEXT,
-    group_size INTEGER,
-    budget_usd REAL,
+    job_type TEXT,
+    suburb TEXT,
+    urgency TEXT,
+    description TEXT,
+    preferred_time TEXT,
     contact_name TEXT,
     score TEXT NOT NULL,
     score_reason TEXT NOT NULL,
     handoff INTEGER NOT NULL DEFAULT 0,
     handoff_reason TEXT,
+    photos_json TEXT NOT NULL DEFAULT '[]',
+    voice_json TEXT NOT NULL DEFAULT '[]',
+    quote_json TEXT NOT NULL DEFAULT '{}',
+    booking_json TEXT NOT NULL DEFAULT '{}',
     extracted_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 """
 
+_LEAD_COLUMNS = {
+    "job_type": "TEXT",
+    "suburb": "TEXT",
+    "urgency": "TEXT",
+    "description": "TEXT",
+    "preferred_time": "TEXT",
+    "contact_name": "TEXT",
+    "photos_json": "TEXT NOT NULL DEFAULT '[]'",
+    "voice_json": "TEXT NOT NULL DEFAULT '[]'",
+    "quote_json": "TEXT NOT NULL DEFAULT '{}'",
+    "booking_json": "TEXT NOT NULL DEFAULT '{}'",
+}
+
 _LEAD_SELECT = """
 SELECT
-    l.id, l.conversation_id, l.destination, l.travel_dates, l.group_size,
-    l.budget_usd, l.contact_name, l.score, l.score_reason, l.handoff,
-    l.handoff_reason, l.extracted_json, l.created_at, l.updated_at,
+    l.id, l.conversation_id, l.job_type, l.suburb, l.urgency, l.description,
+    l.preferred_time, l.contact_name, l.score, l.score_reason, l.handoff,
+    l.handoff_reason, l.photos_json, l.voice_json, l.quote_json, l.booking_json,
+    l.extracted_json, l.created_at, l.updated_at,
     c.wa_id, c.profile_name, c.source, c.ad_id, c.campaign, c.ad_headline,
     c.ad_source, c.status AS conversation_status,
     (
@@ -84,11 +104,19 @@ def utcnow() -> str:
 
 
 class Database:
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, clock=None) -> None:
         self.path = path
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.executescript(_SCHEMA)
+            _migrate(conn)
+
+    def timestamp(self) -> str:
+        current = self.clock()
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        return current.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -110,7 +138,7 @@ class Database:
         source: str,
         ad: dict | None = None,
     ) -> dict:
-        now = utcnow()
+        now = self.timestamp()
         ad = ad or {}
         with self.connect() as conn:
             cursor = conn.execute(
@@ -140,7 +168,7 @@ class Database:
                     extracted_json, created_at, updated_at
                 ) VALUES (?, 'cold', ?, 0, '{}', ?, ?)
                 """,
-                (conversation_id, "No destination yet.", now, now),
+                (conversation_id, "No job type yet.", now, now),
             )
             return _conversation(conn, conversation_id)
 
@@ -175,7 +203,7 @@ class Database:
         )
 
     def set_profile_name(self, conversation_id: int, profile_name: str) -> dict:
-        now = utcnow()
+        now = self.timestamp()
         with self.connect() as conn:
             conn.execute(
                 """
@@ -188,7 +216,7 @@ class Database:
             return _conversation(conn, conversation_id)
 
     def attach_ad(self, conversation_id: int, ad: dict) -> dict:
-        now = utcnow()
+        now = self.timestamp()
         with self.connect() as conn:
             conn.execute(
                 """
@@ -208,7 +236,7 @@ class Database:
             return _conversation(conn, conversation_id)
 
     def set_status(self, conversation_id: int, status: str) -> dict:
-        now = utcnow()
+        now = self.timestamp()
         with self.connect() as conn:
             conn.execute(
                 "UPDATE conversations SET status = ?, updated_at = ? WHERE id = ?",
@@ -223,7 +251,7 @@ class Database:
         body: str,
         provider_message_id: str | None,
     ) -> dict:
-        now = utcnow()
+        now = self.timestamp()
         with self.connect() as conn:
             cursor = conn.execute(
                 """
@@ -262,6 +290,19 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def last_inbound_at(self, conversation_id: int) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT created_at FROM messages
+                WHERE conversation_id = ? AND direction = 'in'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+        return row["created_at"] if row else None
+
     def get_lead(self, lead_id: int) -> dict | None:
         with self.connect() as conn:
             row = conn.execute(_LEAD_SELECT + " WHERE l.id = ?", (lead_id,)).fetchone()
@@ -276,38 +317,65 @@ class Database:
 
     def list_leads(self) -> list[dict]:
         with self.connect() as conn:
-            rows = conn.execute(_LEAD_SELECT + " ORDER BY l.updated_at DESC, l.id DESC").fetchall()
+            rows = conn.execute(
+                _LEAD_SELECT + " ORDER BY l.updated_at DESC, l.id DESC"
+            ).fetchall()
         return [dict(row) for row in rows]
 
+    def booked_intervals(self) -> list[tuple[datetime, datetime]]:
+        intervals = []
+        for lead in self.list_leads():
+            try:
+                booking = json.loads(lead.get("booking_json") or "{}")
+            except json.JSONDecodeError:
+                continue
+            if booking.get("status") != "booked":
+                continue
+            start, end = booking.get("start"), booking.get("end")
+            if not start or not end:
+                continue
+            intervals.append((_parse_iso(start), _parse_iso(end)))
+        return intervals
+
     def save_lead(self, conversation_id: int, values: dict) -> dict:
-        now = utcnow()
+        now = self.timestamp()
         with self.connect() as conn:
             cursor = conn.execute(
                 """
                 UPDATE leads SET
-                    destination = ?,
-                    travel_dates = ?,
-                    group_size = ?,
-                    budget_usd = ?,
+                    job_type = ?,
+                    suburb = ?,
+                    urgency = ?,
+                    description = ?,
+                    preferred_time = ?,
                     contact_name = ?,
                     score = ?,
                     score_reason = ?,
                     handoff = ?,
                     handoff_reason = ?,
+                    photos_json = ?,
+                    voice_json = ?,
+                    quote_json = ?,
+                    booking_json = ?,
                     extracted_json = ?,
                     updated_at = ?
                 WHERE conversation_id = ?
                 """,
                 (
-                    values.get("destination"),
-                    values.get("travel_dates"),
-                    values.get("group_size"),
-                    values.get("budget_usd"),
+                    values.get("job_type"),
+                    values.get("suburb"),
+                    values.get("urgency"),
+                    values.get("description"),
+                    values.get("preferred_time"),
                     values.get("contact_name"),
                     values["score"],
                     values["score_reason"],
                     1 if values.get("handoff") else 0,
                     values.get("handoff_reason"),
+                    values.get("photos_json") or "[]",
+                    values.get("voice_json") or "[]",
+                    values.get("quote_json") or "{}",
+                    values.get("booking_json") or "{}",
                     values.get("extracted_json") or "{}",
                     now,
                     conversation_id,
@@ -321,6 +389,13 @@ class Database:
         return lead
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(leads)")}
+    for name, typedef in _LEAD_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE leads ADD COLUMN {name} {typedef}")
+
+
 def _conversation(conn: sqlite3.Connection, conversation_id: int) -> dict:
     row = conn.execute(
         "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
@@ -328,3 +403,11 @@ def _conversation(conn: sqlite3.Connection, conversation_id: int) -> dict:
     if row is None:
         raise KeyError(conversation_id)
     return dict(row)
+
+
+def _parse_iso(value: str) -> datetime:
+    text = value.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed

@@ -1,3 +1,4 @@
+const assistantName = window.ASSISTANT_NAME || "Assistant";
 const thread = document.getElementById("thread");
 const composer = document.getElementById("composer");
 const messageInput = document.getElementById("message");
@@ -98,7 +99,7 @@ function renderThread(items) {
     row.className = "bubble " + (item.direction === "out" ? "out" : "in");
     const who = document.createElement("span");
     who.className = "who";
-    who.textContent = item.direction === "out" ? "Maya" : "Traveller";
+    who.textContent = item.direction === "out" ? assistantName : "Customer";
     const text = document.createElement("p");
     text.textContent = item.body;
     row.append(who, text);
@@ -120,28 +121,40 @@ function renderLead(data) {
   scoreEl.textContent = lead.score;
   scoreEl.className = "score " + lead.score;
   scoreReason.textContent = lead.score_reason || "";
-  setFact("destination", lead.destination);
-  setFact("travel_dates", lead.travel_dates);
-  setFact("group_size", lead.group_size);
-  setFact("budget_usd", lead.budget_usd == null ? null : money(lead.budget_usd));
+  setFact("job_type", lead.job_label || lead.job_type);
+  setFact("suburb", lead.suburb);
+  setFact("urgency", lead.urgency);
+  setFact("description", lead.description);
+  setFact("preferred_time", lead.preferred_time);
   setFact("contact_name", lead.contact_name);
+  const quoteNote = document.getElementById("quote-note");
+  if (lead.quote && lead.quote.min_aud != null) {
+    quoteNote.hidden = false;
+    quoteNote.textContent =
+      "Internal draft " + lead.quote.min_aud + "–" + lead.quote.max_aud +
+      " (" + lead.quote.status + "). Not sent to the customer.";
+  } else {
+    quoteNote.hidden = true;
+  }
+  const bookingNote = document.getElementById("booking-note");
+  if (lead.booking && lead.booking.status === "booked") {
+    bookingNote.hidden = false;
+    bookingNote.textContent = "Booked " + (lead.booking.label || "");
+  } else if (lead.booking && lead.booking.status === "offered") {
+    bookingNote.hidden = false;
+    bookingNote.textContent = "Visit times offered, not booked yet.";
+  } else {
+    bookingNote.hidden = true;
+  }
   handoffEl.hidden = !lead.handoff;
   handoffEl.textContent = lead.handoff_reason === "human_requested"
-    ? "Asked for a person — with sales"
-    : "Handed to sales";
+    ? "Asked for a person — with the electrician"
+    : "Handed to the electrician";
 }
 
 function setFact(name, value) {
   const node = document.getElementById("f-" + name);
   node.textContent = value == null || value === "" ? "—" : String(value);
-}
-
-function money(value) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(value);
 }
 
 function showError(message) {

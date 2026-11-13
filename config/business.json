@@ -1,0 +1,138 @@
+{
+  "business_name": "Northside Electrical",
+  "trade": "electrician",
+  "assistant_name": "Riley",
+  "area_name": "Sydney Inner West",
+  "timezone": "Australia/Sydney",
+  "currency": "AUD",
+  "slot_minutes": 90,
+  "booking_horizon_days": 10,
+  "banner": "Sample business config — edit config/business.json for your trade, suburbs, hours, and draft price ranges. Prices stay on the staff desk until a person sends them.",
+  "service_area_suburbs": [
+    "Marrickville",
+    "Newtown",
+    "Enmore",
+    "Petersham",
+    "Stanmore",
+    "Dulwich Hill",
+    "Lewisham",
+    "Camperdown",
+    "Erskineville",
+    "Alexandria",
+    "St Peters",
+    "Tempe"
+  ],
+  "hours": {
+    "mon": ["07:30", "16:00"],
+    "tue": ["07:30", "16:00"],
+    "wed": ["07:30", "16:00"],
+    "thu": ["07:30", "16:00"],
+    "fri": ["07:30", "16:00"]
+  },
+  "job_types": [
+    {
+      "id": "fault",
+      "label": "Fault finding and power loss",
+      "emergency": true,
+      "aliases": ["fault", "no power", "power out", "safety switch", "tripping", "rcd", "short circuit"],
+      "quote": {
+        "min_aud": 220,
+        "max_aud": 480,
+        "basis": "call-out and first hour; parts extra"
+      }
+    },
+    {
+      "id": "power_point",
+      "label": "Power point or lighting",
+      "aliases": ["power point", "powerpoint", "gpo", "downlight", "light fitting", "lighting"],
+      "quote": {
+        "min_aud": 180,
+        "max_aud": 450,
+        "basis": "per point in an accessible roof space"
+      }
+    },
+    {
+      "id": "switchboard",
+      "label": "Switchboard upgrade",
+      "aliases": ["switchboard", "meter box", "consumer mains", "fuse box"],
+      "quote": {
+        "min_aud": 1800,
+        "max_aud": 4500,
+        "basis": "board size and whether the supply needs an upgrade"
+      }
+    },
+    {
+      "id": "smoke_alarm",
+      "label": "Smoke alarm",
+      "aliases": ["smoke alarm", "smoke alarms", "smoke detector"],
+      "quote": {
+        "min_aud": 150,
+        "max_aud": 380,
+        "basis": "per alarm, mains or interconnected"
+      }
+    },
+    {
+      "id": "ceiling_fan",
+      "label": "Ceiling fan",
+      "aliases": ["ceiling fan", "exhaust fan"],
+      "quote": {
+        "min_aud": 180,
+        "max_aud": 420,
+        "basis": "supply and install, standard ceiling"
+      }
+    },
+    {
+      "id": "hot_water",
+      "label": "Hot water electrical",
+      "aliases": ["hot water", "hot-water", "element"],
+      "quote": {
+        "min_aud": 250,
+        "max_aud": 650,
+        "basis": "electrical connection or element; unit not included"
+      }
+    },
+    {
+      "id": "ev_charger",
+      "label": "EV charger",
+      "aliases": ["ev charger", "car charger", "wallbox"],
+      "quote": {
+        "min_aud": 900,
+        "max_aud": 2200,
+        "basis": "single-phase home charger, switchboard permitting"
+      }
+    },
+    {
+      "id": "safety_inspection",
+      "label": "Safety inspection",
+      "aliases": ["safety inspection", "inspection", "pre-purchase"],
+      "quote": {
+        "min_aud": 250,
+        "max_aud": 450,
+        "basis": "visual inspection and a written note"
+      }
+    }
+  ],
+  "sample_ads": [
+    {
+      "ad_id": "ad_fault_01",
+      "campaign": "meta_emergency_electrician",
+      "source": "facebook",
+      "headline": "Emergency electrician — Inner West",
+      "job_type": "fault"
+    },
+    {
+      "ad_id": "ad_switchboard_02",
+      "campaign": "meta_switchboard_inner_west",
+      "source": "instagram",
+      "headline": "Switchboard upgrades in the Inner West",
+      "job_type": "switchboard"
+    },
+    {
+      "ad_id": "ad_ev_03",
+      "campaign": "meta_ev_charger",
+      "source": "facebook",
+      "headline": "Home EV charger install",
+      "job_type": "ev_charger"
+    }
+  ]
+}

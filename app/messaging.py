@@ -2,8 +2,11 @@
 
 `MessagingGateway` is the seam. The simulator mints an id and the conversation
 service stores the text. `WhatsAppCloudGateway` builds the real Cloud API
-request and sends it only when credentials exist — the Meta app setup is still
-a TODO, listed on the class.
+request and sends it when credentials exist.
+
+Free-form `send_text` is for the 24-hour care window. `send_template` is the
+outside-the-window path. Template names are stubs until WhatsApp Manager
+approves them — see `app.window`.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from typing import Protocol
 
 import httpx
 
-logger = logging.getLogger("horizon.messaging")
+logger = logging.getLogger("tradie.messaging")
 
 _signature_warning_sent = False
 
@@ -28,12 +31,15 @@ class DeliveryError(RuntimeError):
 
 class MessagingGateway(Protocol):
     def send_text(self, to: str, body: str) -> str:
-        """Deliver one text message. Return the provider message id."""
+        """Deliver one session text message. Return the provider message id."""
+
+    def send_template(self, to: str, template_name: str, body_params: list[str]) -> str:
+        """Deliver one template message. Return the provider message id."""
 
 
 @dataclass
 class Inbound:
-    """One traveller message, whether it came from the simulator or Meta."""
+    """One customer message, whether it came from the simulator or Meta."""
 
     wa_id: str
     text: str | None
@@ -44,12 +50,17 @@ class Inbound:
     ad_headline: str | None = None
     ad_source: str | None = None
     source: str = "whatsapp"
+    media_id: str | None = None
+    mime_type: str | None = None
 
 
 class SimulatedGateway:
     """Local stand-in. Nothing is sent anywhere; the transcript lives in SQLite."""
 
     def send_text(self, to: str, body: str) -> str:
+        return f"sim_{uuid.uuid4().hex[:16]}"
+
+    def send_template(self, to: str, template_name: str, body_params: list[str]) -> str:
         return f"sim_{uuid.uuid4().hex[:16]}"
 
 
@@ -66,10 +77,10 @@ class WhatsAppCloudGateway:
     TODO: Expose this app on public HTTPS, subscribe the app to the `messages`
           field, and set WHATSAPP_VERIFY_TOKEN to the same string.
     TODO: Set WHATSAPP_APP_SECRET so POST /webhook checks X-Hub-Signature-256.
-    TODO: Outside the 24-hour customer-care window, send an approved template
-          instead of free-form text. This method only sends session text.
-    TODO: Ack the webhook immediately and send from a queue. This demo answers
-          inside the request, which is fine at one-agency volume.
+    Outside the 24-hour window, call `send_template` instead of this method.
+    The names are stubs until the templates are approved in WhatsApp Manager.
+    TODO: Ack the webhook immediately and send from a queue. This app answers
+          inside the request, which is fine at one-desk volume.
     """
 
     def __init__(self, token: str, phone_number_id: str, version: str = "v21.0") -> None:
@@ -99,6 +110,52 @@ class WhatsAppCloudGateway:
                 "WhatsApp send is not configured. "
                 "TODO: set WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID. "
                 f"Unsent text for {to} ({len(body)} chars) would POST to {self.messages_url()}."
+            )
+        try:
+            response = httpx.post(
+                self.messages_url(),
+                headers={"Authorization": f"Bearer {self.token}"},
+                json=payload,
+                timeout=15,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise DeliveryError(str(exc)) from exc
+        data = response.json()
+        try:
+            return data["messages"][0]["id"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise DeliveryError(f"unexpected WhatsApp response: {data!r}") from exc
+
+    def build_template_payload(self, to: str, template_name: str, body_params: list[str]) -> dict:
+        components = []
+        if body_params:
+            components.append(
+                {
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": item} for item in body_params],
+                }
+            )
+        return {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to,
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": "en"},
+                "components": components,
+            },
+        }
+
+    def send_template(self, to: str, template_name: str, body_params: list[str]) -> str:
+        # TODO: template_name must be the approved name, not the stub.
+        payload = self.build_template_payload(to, template_name, body_params)
+        if not self.token or not self.phone_number_id:
+            raise NotImplementedError(
+                "WhatsApp send is not configured. "
+                "TODO: set WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID. "
+                f"Unsent template {template_name} for {to} would POST to {self.messages_url()}."
             )
         try:
             response = httpx.post(
@@ -154,6 +211,7 @@ def parse_webhook(payload: dict) -> list[Inbound]:
                     continue
                 referral = message.get("referral") or {}
                 text = _message_text(message)
+                media_id, mime_type = _media(message)
                 found.append(
                     Inbound(
                         wa_id=str(wa_id),
@@ -165,6 +223,8 @@ def parse_webhook(payload: dict) -> list[Inbound]:
                         ad_headline=_blank_to_none(referral.get("headline")),
                         ad_source=_ad_source(referral),
                         source="whatsapp",
+                        media_id=media_id,
+                        mime_type=mime_type,
                     )
                 )
     return found
@@ -193,7 +253,21 @@ def _message_text(message: dict) -> str | None:
         interactive = message.get("interactive") or {}
         reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
         return _blank_to_none(reply.get("title"))
+    if kind == "image":
+        return _blank_to_none((message.get("image") or {}).get("caption"))
+    if kind == "audio":
+        return None
     return None
+
+
+def _media(message: dict) -> tuple[str | None, str | None]:
+    kind = message.get("type")
+    if kind not in {"image", "audio"}:
+        return None, None
+    block = message.get(kind) or {}
+    if not isinstance(block, dict):
+        return None, None
+    return _blank_to_none(block.get("id")), _blank_to_none(block.get("mime_type"))
 
 
 def _ad_source(referral: dict) -> str | None:

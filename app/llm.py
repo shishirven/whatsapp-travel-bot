@@ -1,9 +1,9 @@
 """Qualifiers: Claude via tool use, and a keyword stand-in for offline demos.
 
 Claude Sonnet 5.5 rejects forced tool choice (`tool_choice` any/tool). The
-call uses `auto` plus a strict schema, and the prompt tells Maya to call the
-tool every turn. If the model answers in plain text anyway, that text is the
-reply and no new facts are stored.
+call uses `auto` plus a strict schema, and the prompt tells the assistant to
+call the tool every turn. If the model answers in plain text anyway, that
+text is the reply and no new facts are stored.
 """
 
 from __future__ import annotations
@@ -13,18 +13,19 @@ from dataclasses import dataclass
 
 import anthropic
 
+from app.business import Business, load_business
 from app.extract import extract_facts
-from app.knowledge import package_for_destination
-from app.scoring import merge_facts, wants_human
+from app.scoring import canonical_facts, merge_facts, wants_human
 
-logger = logging.getLogger("horizon.llm")
+logger = logging.getLogger("tradie.llm")
 
 QUALIFY_TOOL = {
-    "name": "record_lead_qualification",
+    "name": "record_job_intake",
     "description": (
-        "Record what the traveller has actually said, and the exact WhatsApp "
-        "reply to send. Call this on every turn. Use null for any fact they "
-        "have not stated. Do not invent dates, group size, budget, or a name."
+        "Record what the customer has actually said about the job, and the "
+        "exact WhatsApp reply to send. Call this on every turn. Use null for "
+        "any fact they have not stated. Do not invent a suburb, a time, or a name. "
+        "Never put a price in reply."
     ),
     "strict": True,
     "input_schema": {
@@ -35,55 +36,61 @@ QUALIFY_TOOL = {
                 "type": "string",
                 "description": (
                     "Customer-facing WhatsApp message. One or two short sentences. "
-                    "Ask at most one question."
+                    "Ask at most one question. Do not mention prices or dollar amounts."
                 ),
             },
             "request_human": {
                 "type": "boolean",
-                "description": "True only when the traveller asks to speak with a person.",
+                "description": "True only when the customer asks to speak with a person.",
             },
-            "destination": {
+            "job_type": {
                 "anyOf": [{"type": "string"}, {"type": "null"}],
-                "description": "Where they want to go, or null. The ad is not confirmation.",
+                "description": "Configured job type id, or their words, or null. The ad is not confirmation.",
             },
-            "travel_dates": {
+            "suburb": {
                 "anyOf": [{"type": "string"}, {"type": "null"}],
-                "description": "Dates or a rough month, in their words, or null.",
+                "description": "Suburb of the job, or null.",
             },
-            "group_size": {
-                "anyOf": [{"type": "integer"}, {"type": "null"}],
-                "description": "Number of travellers, or null.",
+            "urgency": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "description": "emergency, urgent, planned, or null.",
             },
-            "budget_usd": {
-                "anyOf": [{"type": "number"}, {"type": "null"}],
-                "description": "Approximate budget converted to USD, or null.",
+            "description": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "description": "What they say is wrong, in their words, or null.",
+            },
+            "preferred_time": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "description": "When they would like the visit, in their words, or null.",
             },
             "contact_name": {
                 "anyOf": [{"type": "string"}, {"type": "null"}],
-                "description": "Name for the enquiry, or null. Do not copy the WhatsApp profile.",
+                "description": "Name for the job, or null. Do not copy the WhatsApp profile.",
             },
         },
         "required": [
             "reply",
             "request_human",
-            "destination",
-            "travel_dates",
-            "group_size",
-            "budget_usd",
+            "job_type",
+            "suburb",
+            "urgency",
+            "description",
+            "preferred_time",
             "contact_name",
         ],
     },
 }
 
-_FALLBACK_REPLY = "Could you tell me a little more about the trip you have in mind?"
+_FALLBACK_REPLY = "Could you tell me a little more about the job?"
 _MAX_HISTORY = 20
+_SAFETY = "If anyone is in danger, or you can smell burning, get out and call 000."
 
 _QUESTIONS = (
-    ("destination", "Where are you hoping to go?"),
-    ("travel_dates", "What dates, or even a rough month, are you looking at?"),
-    ("group_size", "How many people are travelling?"),
-    ("budget_usd", "What budget do you have in mind, in USD if that's easy?"),
-    ("contact_name", "What name should I put on the enquiry?"),
+    ("job_type", "What needs doing — a fault, a power point, a switchboard, or something else?"),
+    ("suburb", "Which suburb is the job in?"),
+    ("urgency", "Is this an emergency, is it urgent, or can it wait?"),
+    ("description", "What's going on, in a sentence or two?"),
+    ("contact_name", "What name should I put on the job?"),
 )
 
 
@@ -93,26 +100,28 @@ class QualificationDraft:
 
     reply: str
     request_human: bool = False
-    destination: str | None = None
-    travel_dates: str | None = None
-    group_size: int | None = None
-    budget_usd: float | None = None
+    job_type: str | None = None
+    suburb: str | None = None
+    urgency: str | None = None
+    description: str | None = None
+    preferred_time: str | None = None
     contact_name: str | None = None
     raw: dict | None = None
 
     def facts(self) -> dict:
         return {
-            "destination": self.destination,
-            "travel_dates": self.travel_dates,
-            "group_size": self.group_size,
-            "budget_usd": self.budget_usd,
+            "job_type": self.job_type,
+            "suburb": self.suburb,
+            "urgency": self.urgency,
+            "description": self.description,
+            "preferred_time": self.preferred_time,
             "contact_name": self.contact_name,
         }
 
 
 @dataclass
 class TurnContext:
-    """What a qualifier may look at for a single traveller message."""
+    """What a qualifier may look at for a single customer message."""
 
     history: list[dict]
     known: dict
@@ -144,12 +153,16 @@ class AnthropicQualifier:
 class RuleBasedQualifier:
     """Offline practice qualifier. Keyword extraction plus a fixed question order."""
 
+    def __init__(self, business: Business | None = None) -> None:
+        self.business = business or load_business()
+
     def qualify(self, turn: TurnContext) -> QualificationDraft:
         latest = _latest_user_text(turn.history)
-        extracted = extract_facts(latest)
-        merged = merge_facts(turn.known, extracted)
+        extracted = extract_facts(latest, self.business)
+        merged = canonical_facts(merge_facts(turn.known, extracted), self.business)
         asked = wants_human(latest)
         reply = _compose_reply(
+            business=self.business,
             latest=latest,
             extracted=extracted,
             known=turn.known,
@@ -163,10 +176,11 @@ class RuleBasedQualifier:
         return QualificationDraft(
             reply=reply,
             request_human=asked,
-            destination=extracted["destination"],
-            travel_dates=extracted["travel_dates"],
-            group_size=extracted["group_size"],
-            budget_usd=extracted["budget_usd"],
+            job_type=extracted["job_type"],
+            suburb=extracted["suburb"],
+            urgency=extracted["urgency"],
+            description=extracted["description"],
+            preferred_time=extracted["preferred_time"],
             contact_name=extracted["contact_name"],
             raw=raw,
         )
@@ -224,7 +238,7 @@ def to_api_messages(history: list[dict]) -> list[dict]:
             0,
             {
                 "role": "user",
-                "content": "(The traveller opened the chat. Your greeting was already sent.)",
+                "content": "(The customer opened the chat. Your greeting was already sent.)",
             },
         )
     if not cleaned:
@@ -238,13 +252,17 @@ def _draft_from_tool(data: dict, texts: list[str]) -> QualificationDraft:
         reply = " ".join(piece.strip() for piece in texts if piece and piece.strip())
     if not reply:
         reply = _FALLBACK_REPLY
+    urgency = _clean_str(data.get("urgency"))
+    if urgency:
+        urgency = urgency.lower()
     return QualificationDraft(
         reply=reply,
         request_human=_clean_bool(data.get("request_human")),
-        destination=_clean_str(data.get("destination")),
-        travel_dates=_clean_str(data.get("travel_dates")),
-        group_size=_clean_int(data.get("group_size")),
-        budget_usd=_clean_money(data.get("budget_usd")),
+        job_type=_clean_str(data.get("job_type")),
+        suburb=_clean_str(data.get("suburb")),
+        urgency=urgency,
+        description=_clean_str(data.get("description")),
+        preferred_time=_clean_str(data.get("preferred_time")),
         contact_name=_clean_str(data.get("contact_name")),
         raw=data,
     )
@@ -252,6 +270,7 @@ def _draft_from_tool(data: dict, texts: list[str]) -> QualificationDraft:
 
 def _compose_reply(
     *,
+    business: Business,
     latest: str,
     extracted: dict,
     known: dict,
@@ -263,43 +282,62 @@ def _compose_reply(
 ) -> str:
     if asked:
         return (
-            "Absolutely — I'll bring a person from the Horizon Sample Travel desk into this chat."
+            f"Absolutely — I'll bring a person from the {business.name} desk into this chat."
         )
 
     parts: list[str] = []
+    if merged.get("urgency") == "emergency" and "000" not in latest:
+        parts.append(_SAFETY)
+
     first_user_turn = _user_turns(history) <= 1
     if profile_name and not known.get("contact_name") and first_user_turn:
         parts.append(f"Thanks, {profile_name}.")
 
-    new_destination = extracted.get("destination")
-    if new_destination and new_destination != known.get("destination"):
-        package = package_for_destination(new_destination)
-        if package:
-            parts.append(
-                f"{package['name']} is {package['duration_days']} days from "
-                f"${package['price_from_usd']:,} (sample price). {package['summary']}"
-            )
-        else:
-            parts.append(
-                "I don't have a sample itinerary for that on this sheet, but I'll note it for the team."
-            )
-    elif ad and not merged.get("destination") and first_user_turn:
-        headline = ad.get("headline") or "the ad you clicked"
-        parts.append(f'I can plan around "{headline}", or look at something else.')
+    new_job = extracted.get("job_type")
+    if new_job and new_job != known.get("job_type"):
+        label = business.job_label(new_job) or new_job
+        parts.append(f"{label} — I'll put that on the job.")
+    elif ad and not merged.get("job_type") and first_user_turn:
+        headline = ad.get("headline") or "the ad you tapped"
+        parts.append(f'I can help with "{headline}", or with something else.')
+
+    if merged.get("suburb") and not business.in_area(merged.get("suburb")) and extracted.get("suburb"):
+        parts.append(
+            f"{merged['suburb']} is outside the area we cover. "
+            "I'll note it so someone can refer you."
+        )
 
     question = _next_question(merged)
-    if question:
-        parts.append(question)
+    if question and not (merged.get("urgency") == "emergency" and business.in_area(merged.get("suburb")) and merged.get("job_type")):
+        # An in-area emergency is already enough to hand over. Don't pile on a question.
+        if not _checklist_complete(merged, business):
+            parts.append(question)
+            return " ".join(parts)
+
+    if _checklist_complete(merged, business) or (
+        merged.get("urgency") == "emergency" and business.in_area(merged.get("suburb")) and merged.get("job_type")
+    ):
+        label = business.job_label(merged.get("job_type")) or merged.get("job_type")
+        who = merged.get("contact_name") or "you"
+        parts.append(
+            f"I have a {label} in {merged.get('suburb')} ({merged.get('urgency') or 'emergency'}) "
+            f"under the name {who}. A person from the {business.name} desk will take it from here."
+        )
         return " ".join(parts)
 
-    budget = merged["budget_usd"]
-    parts.append(
-        f"Lovely — I have {merged['destination']} for {merged['travel_dates']}, "
-        f"{merged['group_size']} travellers, around ${budget:,.0f}, "
-        f"under the name {merged['contact_name']}. "
-        "A person from the Horizon Sample Travel desk will take it from here."
+    if question:
+        parts.append(question)
+    return " ".join(parts) or _FALLBACK_REPLY
+
+
+def _checklist_complete(facts: dict, business: Business) -> bool:
+    return bool(
+        business.resolve_job_type(facts.get("job_type"))
+        and business.in_area(facts.get("suburb"))
+        and facts.get("urgency")
+        and facts.get("description")
+        and facts.get("contact_name")
     )
-    return " ".join(parts)
 
 
 def _next_question(facts: dict) -> str | None:
@@ -333,27 +371,3 @@ def _clean_bool(value: object) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes"}
     return False
-
-
-def _clean_int(value: object) -> int | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return None
-    if number < 1 or number > 50:
-        return None
-    return number
-
-
-def _clean_money(value: object) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if number < 50:
-        return None
-    return round(number, 2)

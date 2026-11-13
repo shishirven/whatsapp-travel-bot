@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="page login-page">
+  <form class="login-card" method="post" action="/staff/login">
+    <h1>Staff desk</h1>
+    <p>Sign in to see job cards, draft quotes, and photos. Quotes are not sent until you approve them.</p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <label class="field">
+      <span>Username</span>
+      <input name="username" autocomplete="username" required>
+    </label>
+    <label class="field">
+      <span>Password</span>
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit">Sign in</button>
+  </form>
+</section>
+{% endblock %}

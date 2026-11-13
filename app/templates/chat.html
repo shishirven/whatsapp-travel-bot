@@ -3,8 +3,8 @@
 <section class="workspace">
   <aside class="panel">
     <div class="panel-head">
-      <h1>New lead</h1>
-      <p>Pretend a traveller tapped a Meta click-to-WhatsApp ad. The first reply mentions that ad.</p>
+      <h1>New job</h1>
+      <p>Pretend a customer tapped a click-to-WhatsApp ad, or opened the chat directly. Nothing is sent to Meta.</p>
     </div>
     <label class="field">
       <span>Profile name <em>optional</em></span>
@@ -21,7 +21,7 @@
       <button type="button" class="ad-card ad-card-plain" data-ad-id="">
         <span class="ad-source">No ad</span>
         <strong>Start an organic chat</strong>
-        <span class="ad-campaign">Walk-in, not from Meta</span>
+        <span class="ad-campaign">Someone who already has the number</span>
       </button>
     </div>
     <p class="banner">{{ banner }}</p>
@@ -30,40 +30,44 @@
   <section class="panel chat-panel">
     <header class="chat-head">
       <div>
-        <h2 id="chat-title">Maya</h2>
+        <h2 id="chat-title">{{ business.assistant_name }}</h2>
         <p id="chat-sub">WhatsApp simulator · nothing is sent to Meta</p>
       </div>
       <p class="llm llm-{{ llm.provider }}">{{ llm.label }}</p>
     </header>
     <div id="thread" class="thread" aria-live="polite">
-      <p class="empty-thread">Pick an ad to open the chat. Maya greets first, the way a click-to-WhatsApp ad would.</p>
+      <p class="empty-thread">Pick an ad or start an organic chat. {{ business.assistant_name }} greets first.</p>
     </div>
-    <p id="typing" class="typing" hidden>Maya is typing…</p>
+    <p id="typing" class="typing" hidden>{{ business.assistant_name }} is typing…</p>
     <form id="composer" hidden>
       <label class="sr-only" for="message">Message</label>
-      <input id="message" maxlength="2000" placeholder="Message Maya" autocomplete="off" required>
+      <input id="message" maxlength="2000" placeholder="Message {{ business.assistant_name }}" autocomplete="off" required>
       <button type="submit">Send</button>
     </form>
   </section>
 
   <aside class="panel lead-panel">
     <div class="panel-head">
-      <h2>Qualification</h2>
+      <h2>Job card</h2>
       <p id="wa-id">No chat yet.</p>
     </div>
     <p id="score" class="score cold">Cold</p>
-    <p id="score-reason">Start a chat to extract destination, dates, group size, budget, and a name.</p>
+    <p id="score-reason">Start a chat to capture the job type, suburb, urgency, description, and a name.</p>
     <dl id="facts">
-      <div><dt>Destination</dt><dd id="f-destination">—</dd></div>
-      <div><dt>Dates</dt><dd id="f-travel_dates">—</dd></div>
-      <div><dt>Group</dt><dd id="f-group_size">—</dd></div>
-      <div><dt>Budget</dt><dd id="f-budget_usd">—</dd></div>
+      <div><dt>Job</dt><dd id="f-job_type">—</dd></div>
+      <div><dt>Suburb</dt><dd id="f-suburb">—</dd></div>
+      <div><dt>Urgency</dt><dd id="f-urgency">—</dd></div>
+      <div><dt>Description</dt><dd id="f-description">—</dd></div>
+      <div><dt>Preferred</dt><dd id="f-preferred_time">—</dd></div>
       <div><dt>Name</dt><dd id="f-contact_name">—</dd></div>
     </dl>
-    <p id="handoff" class="callout" hidden>Handed to sales</p>
-    <p class="fine">Score is computed in <code>app/scoring.py</code>, not by the model. Hot, or any ask for a person, hands the chat over.</p>
+    <p id="quote-note" class="callout" hidden></p>
+    <p id="booking-note" class="fine" hidden></p>
+    <p id="handoff" class="callout" hidden>Handed to the electrician</p>
+    <p class="fine">Score is computed in <code>app/scoring.py</code>, not by the model. A hot job, or any ask for a person, hands the chat over. Prices stay drafts until the desk sends them.</p>
   </aside>
 </section>
-<noscript><p class="banner">This simulator needs JavaScript. The leads desk at /staff works without it.</p></noscript>
+<noscript><p class="banner">This simulator needs JavaScript. The jobs desk at /staff works without it.</p></noscript>
+<script>window.ASSISTANT_NAME = {{ business.assistant_name | tojson }};</script>
 <script src="/static/chat.js"></script>
 {% endblock %}
