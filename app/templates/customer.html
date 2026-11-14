@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="page">
+  <p class="back"><a href="/staff/customers">All customers</a></p>
+  <header class="page-head">
+    <h1>{{ customer.name or "Unnamed customer" }}</h1>
+    <p class="meta">{% if customer.trusted %}Existing client{% else %}Not confirmed as an existing client{% endif %}</p>
+  </header>
+  <dl class="facts">
+    <div><dt>Numbers</dt><dd>{% if numbers %}{{ numbers|map(attribute='wa_id')|join(", ") }}{% else %}—{% endif %}</dd></div>
+    <div><dt>Addresses</dt><dd>{% if addresses %}{{ addresses|join("; ") }}{% else %}—{% endif %}</dd></div>
+    <div><dt>Notes</dt><dd>{{ customer.notes or "—" }}</dd></div>
+  </dl>
+  <h2>Jobs</h2>
+  {% if not jobs %}
+  <p class="empty">No jobs yet. The next WhatsApp message from one of these numbers opens one.</p>
+  {% else %}
+  <div class="job-cards">
+    {% for job in jobs %}
+    <article class="job-card">
+      <div class="job-card-top">
+        <span class="score {{ job.score }}">{{ job.score }}</span>
+        <span class="meta">{{ job.status }}</span>
+        <span class="meta">{{ job.source }}</span>
+        {% if job.possible_customer_id %}<span class="flag">Possible existing client</span>{% endif %}
+      </div>
+      <h2><a href="/staff/{{ job.id }}">{{ job.job_label or "Job type not set" }}</a></h2>
+      <p class="meta">{{ job.suburb or "Suburb not set" }} · {{ job.wa_id }}</p>
+      <p>{{ job.description or job.last_message or "No description yet." }}</p>
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

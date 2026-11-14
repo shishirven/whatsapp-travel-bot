@@ -18,12 +18,16 @@
         <span class="score {{ lead.score }}">{{ lead.score }}</span>
         {% if lead.urgency %}<span class="urgency urgency-{{ lead.urgency }}">{{ lead.urgency }}</span>{% endif %}
         {% if lead.handoff %}<span class="meta">With the electrician</span>{% else %}<span class="meta">Collecting</span>{% endif %}
+        <span class="meta">{{ lead.status }}</span>
+        <span class="meta">{{ lead.source }}</span>
+        {% if lead.possible_customer_id %}<span class="flag">Possible existing client</span>{% endif %}
       </div>
       <h2><a href="/staff/{{ lead.id }}">{{ lead.contact_name or lead.profile_name or "Unnamed job" }}</a></h2>
       <p class="meta">
         {{ lead.job_label or "Job type not set" }}
         · {{ lead.suburb or "Suburb not set" }}
         {% if lead.campaign %} · {{ lead.campaign }}{% endif %}
+        {% if lead.customer_id %} · <a href="/staff/customers/{{ lead.customer_id }}">Customer</a>{% endif %}
       </p>
       <p>{{ lead.description or lead.last_message or "No description yet." }}</p>
       <p class="meta">

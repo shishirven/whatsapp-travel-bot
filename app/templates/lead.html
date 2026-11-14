@@ -12,6 +12,13 @@
   {% if lead.handoff %}
   <p class="callout">{{ handoff_label or "Handed to the electrician" }}</p>
   {% endif %}
+  {% if lead.possible_customer_id %}
+  <p class="callout flag">Possible existing client: {{ lead.possible_customer_name or "a saved customer" }}{% if candidate_addresses %} — {{ candidate_addresses|join(", ") }}{% endif %}. The bot has not been told this, and has not been given their history.</p>
+  <form method="post" action="/staff/{{ lead.id }}/link" class="stack-form">
+    <input type="hidden" name="customer_id" value="{{ lead.possible_customer_id }}">
+    <button type="submit">Link this number to {{ lead.possible_customer_name or "that customer" }}</button>
+  </form>
+  {% endif %}
   {% if send_error and send_error != "already_sent" %}
   <p class="error">The quote was not sent ({{ send_error }}). It is still a draft.</p>
   {% endif %}
@@ -25,6 +32,22 @@
           <span class="who">{{ business.assistant_name if message.direction == "out" else "Customer" }}</span>
           <p>{{ message.body }}</p>
           <time>{{ message.created_at }}</time>
+          <form method="post" action="/staff/{{ lead.id }}/split" class="stack-form">
+            <input type="hidden" name="message_id" value="{{ message.id }}">
+            <button type="submit" class="text-button">Split onto a new job</button>
+          </form>
+          {% if other_jobs %}
+          <form method="post" action="/staff/messages/{{ message.id }}/reassign" class="stack-form">
+            <label>Move to
+              <select name="job_id">
+                {% for job in other_jobs %}
+                <option value="{{ job.id }}">Job {{ job.id }} · {{ job.job_label or "collecting" }} · {{ job.status }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button type="submit">Move</button>
+          </form>
+          {% endif %}
         </li>
         {% endfor %}
       </ol>
@@ -33,7 +56,9 @@
       <h2>Job card</h2>
       <dl class="facts">
         <div><dt>WhatsApp id</dt><dd>{{ lead.wa_id }}</dd></div>
+        <div><dt>Customer</dt><dd>{% if lead.customer_id %}<a href="/staff/customers/{{ lead.customer_id }}">{{ lead.customer_name or "View customer" }}</a>{% else %}—{% endif %}</dd></div>
         <div><dt>Profile name</dt><dd>{{ lead.profile_name or "—" }}</dd></div>
+        <div><dt>Job status</dt><dd>{{ lead.status }}</dd></div>
         <div><dt>Job</dt><dd>{{ lead.job_label or "—" }}</dd></div>
         <div><dt>Suburb</dt><dd>{{ lead.suburb or "—" }}</dd></div>
         <div><dt>Urgency</dt><dd>{{ lead.urgency or "—" }}</dd></div>
@@ -42,8 +67,33 @@
         <div><dt>Name</dt><dd>{{ lead.contact_name or "—" }}</dd></div>
         <div><dt>Ad</dt><dd>{{ lead.ad_headline or "—" }}</dd></div>
         <div><dt>Campaign</dt><dd>{{ lead.campaign or "—" }}</dd></div>
-        <div><dt>Channel</dt><dd>{{ lead.source }}{% if lead.ad_source %} · {{ lead.ad_source }}{% endif %}</dd></div>
+        <div><dt>Source</dt><dd>{{ lead.source }}{% if lead.ad_source %} · {{ lead.ad_source }}{% endif %}</dd></div>
+        {% if lead.address %}<div><dt>Address</dt><dd>{{ lead.address }}</dd></div>{% endif %}
       </dl>
+
+      <h2>Job status</h2>
+      <form method="post" action="/staff/{{ lead.id }}/status" class="stack-form">
+        <label>Status
+          <select name="status">
+            {% for status in job_statuses %}
+            <option value="{{ status }}" {% if status == lead.status %}selected{% endif %}>{{ status }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">Update status</button>
+      </form>
+      {% if link_targets %}
+      <form method="post" action="/staff/{{ lead.id }}/link" class="stack-form">
+        <label>Link this number to
+          <select name="customer_id">
+            {% for customer in link_targets %}
+            <option value="{{ customer.id }}">{{ customer.name or "Unnamed customer" }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">Link number</button>
+      </form>
+      {% endif %}
 
       <h2>Visit</h2>
       {% if lead.booking and lead.booking.status == "booked" %}

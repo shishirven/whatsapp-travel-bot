@@ -347,6 +347,46 @@ tr:hover td { background: #f7fbfa; }
   cursor: pointer;
 }
 
+.flag {
+  display: inline-block;
+  background: #fef0c7;
+  color: var(--warm);
+  border-radius: 999px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.stack-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  margin: 0.55rem 0;
+}
+
+.stack-form select,
+.stack-form input[type="file"] {
+  font: inherit;
+}
+
+.stack-form button,
+.page .stack-form button {
+  background: var(--green-2);
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  padding: 0.45rem 0.75rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.stack-form .text-button {
+  background: transparent;
+  color: var(--green-2);
+  padding: 0;
+}
+
 .media-list { padding-left: 1.1rem; }
 
 .media-list p { margin: 0.2rem 0; }

@@ -13,6 +13,7 @@
     <nav>
       <a href="/" {% if active == "chat" %}aria-current="page"{% endif %}>Simulator</a>
       <a href="/staff" {% if active == "staff" %}aria-current="page"{% endif %}>Jobs</a>
+      <a href="/staff/customers" {% if active == "customers" %}aria-current="page"{% endif %}>Customers</a>
     </nav>
     <span class="pill">{{ business.trade|title }}</span>
   </header>

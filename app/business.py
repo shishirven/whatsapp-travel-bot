@@ -59,6 +59,7 @@ class Business:
     hours: dict[int, tuple[time, time]]
     job_types: tuple[JobType, ...]
     ads: tuple[Ad, ...]
+    source_tags: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     def zone(self) -> ZoneInfo:
         return ZoneInfo(self.timezone)
@@ -196,6 +197,7 @@ def parse_business(data: dict) -> Business:
         hours=_parse_hours(data.get("hours") or {}),
         job_types=job_types,
         ads=ads,
+        source_tags=_parse_source_tags(data),
     )
 
 
@@ -225,6 +227,34 @@ def _parse_job(item: dict) -> JobType:
             basis=_text(quote.get("basis")) or "guide only; confirmed on site",
         ),
     )
+
+
+def _parse_source_tags(data: dict) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Prefilled click-to-chat tags. Missing key keeps the `(web)` and `(qr)` defaults."""
+    if "source_tags" not in data or data.get("source_tags") is None:
+        raw = [
+            {"source": "website", "tags": ["(web)", "[web]"]},
+            {"source": "qr", "tags": ["(qr)", "[qr]"]},
+        ]
+    else:
+        raw = data["source_tags"]
+    if not isinstance(raw, list):
+        raise ValueError("source_tags must be a list")
+    allowed = {"ad", "organic", "website", "qr", "repeat"}
+    parsed: list[tuple[str, tuple[str, ...]]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("source tag must be an object")
+        source = _required(item, "source").lower()
+        if source not in allowed:
+            raise ValueError(f"Unknown job source {source}")
+        tags = tuple(
+            str(tag).strip() for tag in (item.get("tags") or []) if str(tag).strip()
+        )
+        if not tags:
+            raise ValueError(f"source {source} needs at least one tag")
+        parsed.append((source, tags))
+    return tuple(parsed)
 
 
 def _parse_ad(item: dict) -> Ad:
