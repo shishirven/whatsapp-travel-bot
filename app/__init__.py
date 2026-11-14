@@ -1,1 +1,1 @@
-"""Horizon Sample Travel — WhatsApp lead-qualification demo."""
+"""WhatsApp job intake for Australian tradies. Electricians first."""

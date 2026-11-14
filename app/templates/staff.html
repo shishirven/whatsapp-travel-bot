@@ -2,47 +2,40 @@
 {% block body %}
 <section class="page">
   <header class="page-head">
-    <h1>Leads</h1>
-    <p>Cold: no destination. Warm: destination known, checklist incomplete or budget under $800. Hot: destination, dates, group size, budget of at least $800, and a name. Asking for a person hands the chat to sales at any score.</p>
+    <h1>Jobs</h1>
+    <p>Cold: no job type yet. Warm: job type known, but the suburb is outside the area or the checklist is incomplete. Hot: in-area emergency, or a complete in-area job. Asking for a person hands the chat over at any score. Draft quotes are not sent until you approve them.</p>
+    {% if auth_enabled %}
+    <form method="post" action="/staff/logout"><button type="submit" class="text-button">Sign out</button></form>
+    {% endif %}
   </header>
   {% if not leads %}
-  <p class="empty">No leads yet. <a href="/">Open the simulator</a> or POST a WhatsApp webhook.</p>
+  <p class="empty">No jobs yet. <a href="/">Open the simulator</a> or POST a WhatsApp webhook.</p>
   {% else %}
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>Score</th>
-          <th>Name</th>
-          <th>Destination</th>
-          <th>Dates</th>
-          <th>Group</th>
-          <th>Budget</th>
-          <th>Ad</th>
-          <th>Source</th>
-          <th>Status</th>
-          <th>Last message</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for lead in leads %}
-        <tr>
-          <td><span class="score {{ lead.score }}">{{ lead.score }}</span></td>
-          <td><a href="/staff/{{ lead.id }}">{{ lead.contact_name or lead.profile_name or "Unnamed" }}</a></td>
-          <td>{{ lead.destination or "—" }}</td>
-          <td>{{ lead.travel_dates or "—" }}</td>
-          <td>{{ lead.group_size if lead.group_size is not none else "—" }}</td>
-          <td>
-            {% if lead.budget_usd is not none %}${{ "%.0f"|format(lead.budget_usd) }}{% else %}—{% endif %}
-          </td>
-          <td>{{ lead.campaign or lead.ad_id or "—" }}</td>
-          <td>{{ lead.source }}</td>
-          <td>{% if lead.handoff %}With sales{% else %}Qualifying{% endif %}</td>
-          <td class="last">{{ lead.last_message or "—" }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div class="job-cards">
+    {% for lead in leads %}
+    <article class="job-card">
+      <div class="job-card-top">
+        <span class="score {{ lead.score }}">{{ lead.score }}</span>
+        {% if lead.urgency %}<span class="urgency urgency-{{ lead.urgency }}">{{ lead.urgency }}</span>{% endif %}
+        {% if lead.handoff %}<span class="meta">With the electrician</span>{% else %}<span class="meta">Collecting</span>{% endif %}
+      </div>
+      <h2><a href="/staff/{{ lead.id }}">{{ lead.contact_name or lead.profile_name or "Unnamed job" }}</a></h2>
+      <p class="meta">
+        {{ lead.job_label or "Job type not set" }}
+        · {{ lead.suburb or "Suburb not set" }}
+        {% if lead.campaign %} · {{ lead.campaign }}{% endif %}
+      </p>
+      <p>{{ lead.description or lead.last_message or "No description yet." }}</p>
+      <p class="meta">
+        {% if lead.quote and lead.quote.status == "sent" %}Quote sent
+        {% elif lead.quote %}Draft quote ${{ lead.quote.min_aud }}–${{ lead.quote.max_aud }} {{ business.currency }} — not sent
+        {% else %}No price band yet{% endif %}
+        {% if lead.booking and lead.booking.status == "booked" %} · Booked {{ lead.booking.label }}{% endif %}
+        {% if lead.photos %} · {{ lead.photos|length }} photo{{ "s" if lead.photos|length != 1 else "" }}{% endif %}
+        {% if lead.voice_notes %} · voice note{% endif %}
+      </p>
+    </article>
+    {% endfor %}
   </div>
   {% endif %}
   <p class="banner">{{ banner }}</p>

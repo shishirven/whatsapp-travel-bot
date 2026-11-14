@@ -1,34 +1,15 @@
 """Keyword extraction for the offline qualifier.
 
 This is a stand-in so the simulator runs with no API key. It is not the
-product's reader — Claude is. The patterns are deliberately small and tested.
+product's reader — Claude is. Patterns come from the business config where
+they can (job types and suburbs) so another trade does not need a new parser.
 """
 
 from __future__ import annotations
 
 import re
 
-from app.knowledge import destination_aliases
-
-_MONTH = (
-    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
-    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
-    r"nov(?:ember)?|dec(?:ember)?)"
-)
-
-# A range is a dash or the word "to", not a character class (that would treat
-# the letters t and o as separators).
-_RANGE = r"(?:\s*(?:-|–|to)\s*\d{1,2})?"
-
-# Month phrases before bare numeric ranges, so "June 12-19 2026" is not cut to "12-19".
-_DATE_PATTERNS = (
-    rf"\b({_MONTH}\s+\d{{1,2}}{_RANGE}(?:,?\s+\d{{4}})?)\b",
-    rf"\b(\d{{1,2}}{_RANGE}\s+{_MONTH}(?:,?\s+\d{{4}})?)\b",
-    rf"\b((?:next|this)\s+(?:week|month|weekend|summer|spring|fall|autumn|winter))\b",
-    rf"\b(in\s+{_MONTH}(?:\s+\d{{4}})?)\b",
-    rf"\b({_MONTH}\s+\d{{4}})\b",
-    rf"\b(\d{{1,2}}[/-]\d{{1,2}}(?:[/-]\d{{2,4}})?)\b",
-)
+from app.business import Business, load_business
 
 _NAME = re.compile(
     r"\b(?:my name is|i am|i'm|this is)\s+([A-Za-z][a-z]+(?:\s+[A-Za-z][a-z]+)?)",
@@ -47,74 +28,137 @@ _NAME_STOP = {
     "trying",
     "thinking",
     "coming",
-    "traveling",
-    "travelling",
-    "to",
+    "calling",
+    "needing",
+    "having",
+    "getting",
+    "living",
+    "based",
+    "located",
+    "after",
+    "before",
+    "from",
+    "with",
+    "just",
+    "really",
+    "very",
+    "not",
+    "in",
+    "at",
+    "near",
     "the",
     "a",
-    "not",
-    "just",
+    "to",
 }
 
-_GROUP_PATTERNS = (
-    r"\b(\d{1,2})\s*(?:people|adults|travellers|travelers|guests|pax)\b",
-    r"\bgroup of\s+(\d{1,2})\b",
-    r"\b(?:we are|we're)\s+(\d{1,2})\b",
-    r"\bfamily of\s+(\d{1,2})\b",
+_SUBURB_INTRO = re.compile(
+    r"\b(?:in|at|near|around|from)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\b"
+)
+_SUBURB_STOP = {"the", "my", "our", "your", "a", "an", "this", "that", "some", "town"}
+
+_EMERGENCY = (
+    "emergency",
+    "no power",
+    "power is out",
+    "power's out",
+    "powers out",
+    "power out",
+    "sparking",
+    "sparks",
+    "burning smell",
+    "smell burning",
+    "smells like burning",
+    "electric shock",
+    "got a shock",
+    "right now",
+    "smoke",
+)
+_PLANNED = (
+    "not urgent",
+    "no rush",
+    "no hurry",
+    "whenever",
+    "when you can",
+    "next week",
+    "next month",
+)
+_URGENT = (
+    "urgent",
+    "asap",
+    "as soon as",
+    "today",
+    "this afternoon",
+    "straight away",
+    "straightaway",
 )
 
-_BUDGET_PATTERNS = (
-    r"\$\s*(\d{2,7}(?:,\d{3})*)",
-    r"\b(\d{2,7}(?:,\d{3})*)\s*(?:usd|dollars?)\b",
-    r"\b(?:budget|under|up to)\s*(?:of|is|around|about)?\s*\$?\s*(\d{2,7}(?:,\d{3})*)",
+_PREFERRED = (
+    r"\b(tomorrow(?:\s+(?:morning|arvo|afternoon|evening))?)\b",
+    r"\b(this\s+(?:morning|afternoon|arvo|evening|week))\b",
+    r"\b(next\s+(?:week|monday|tuesday|wednesday|thursday|friday))\b",
+    r"\b((?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+(?:morning|afternoon|arvo))?)\b",
+    r"\b(morning|afternoon|arvo)\b",
 )
 
 
-def extract_destination(text: str) -> str | None:
-    lowered = text.lower()
-    hits: list[tuple[int, int, str]] = []
-    for alias, destination in destination_aliases():
-        match = re.search(rf"\b{re.escape(alias)}\b", lowered)
-        if match:
-            hits.append((match.start(), -len(alias), destination))
-    if not hits:
+def extract_job_type(text: str, business: Business | None = None) -> str | None:
+    business = business or load_business()
+    lowered = text.casefold()
+    matches: list[tuple[int, int, str, bool]] = []
+    for job in business.job_types:
+        for alias in job.aliases:
+            match = re.search(rf"\b{re.escape(alias.casefold())}\b", lowered)
+            if match:
+                matches.append((match.start(), -len(alias), job.id, job.emergency))
+    if not matches:
         return None
-    hits.sort()
-    return hits[0][2]
+    if _urgency_label(lowered) == "emergency":
+        emergency = [item for item in matches if item[3]]
+        if emergency:
+            emergency.sort()
+            return emergency[0][2]
+    matches.sort()
+    return matches[0][2]
 
 
-def extract_dates(text: str) -> str | None:
-    for pattern in _DATE_PATTERNS:
+def extract_suburb(text: str, business: Business | None = None) -> str | None:
+    business = business or load_business()
+    lowered = text.casefold()
+    hits: list[tuple[int, int, str]] = []
+    for suburb in sorted(business.suburbs, key=len, reverse=True):
+        match = re.search(rf"\b{re.escape(suburb.casefold())}\b", lowered)
+        if match:
+            hits.append((match.start(), -len(suburb), suburb))
+    if hits:
+        hits.sort()
+        return hits[0][2]
+    match = _SUBURB_INTRO.search(text)
+    if not match:
+        return None
+    parts = match.group(1).split()
+    if parts[0].casefold() in _SUBURB_STOP:
+        return None
+    return " ".join(part.capitalize() for part in parts)
+
+
+def extract_urgency(text: str) -> str | None:
+    return _urgency_label(text.casefold())
+
+
+def extract_description(text: str) -> str | None:
+    cleaned = " ".join(text.split())
+    if len(cleaned.split()) < 6:
+        return None
+    if _NAME.fullmatch(cleaned):
+        return None
+    return cleaned
+
+
+def extract_preferred_time(text: str) -> str | None:
+    for pattern in _PREFERRED:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             return " ".join(match.group(1).split())
-    return None
-
-
-def extract_group_size(text: str) -> int | None:
-    lowered = text.lower()
-    if re.search(r"\bsolo\b", lowered):
-        return 1
-    if re.search(r"\b(couple|two of us|just us two)\b", lowered):
-        return 2
-    for pattern in _GROUP_PATTERNS:
-        match = re.search(pattern, lowered)
-        if not match:
-            continue
-        size = int(match.group(1))
-        if 1 <= size <= 50:
-            return size
-    return None
-
-
-def extract_budget(text: str) -> float | None:
-    for pattern in _BUDGET_PATTERNS:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if not match:
-            continue
-        value = float(match.group(1).replace(",", ""))
-        if value >= 50:
-            return value
     return None
 
 
@@ -130,11 +174,23 @@ def extract_name(text: str) -> str | None:
     return " ".join(part.capitalize() for part in parts)
 
 
-def extract_facts(text: str) -> dict:
+def extract_facts(text: str, business: Business | None = None) -> dict:
+    business = business or load_business()
     return {
-        "destination": extract_destination(text),
-        "travel_dates": extract_dates(text),
-        "group_size": extract_group_size(text),
-        "budget_usd": extract_budget(text),
+        "job_type": extract_job_type(text, business),
+        "suburb": extract_suburb(text, business),
+        "urgency": extract_urgency(text),
+        "description": extract_description(text),
+        "preferred_time": extract_preferred_time(text),
         "contact_name": extract_name(text),
     }
+
+
+def _urgency_label(lowered: str) -> str | None:
+    if any(phrase in lowered for phrase in _EMERGENCY):
+        return "emergency"
+    if any(phrase in lowered for phrase in _PLANNED):
+        return "planned"
+    if any(phrase in lowered for phrase in _URGENT):
+        return "urgent"
+    return None

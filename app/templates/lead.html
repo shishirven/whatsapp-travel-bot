@@ -1,16 +1,19 @@
 {% extends "base.html" %}
 {% block body %}
 <section class="page lead-detail">
-  <p class="back"><a href="/staff">All leads</a></p>
+  <p class="back"><a href="/staff">All jobs</a></p>
   <header class="page-head">
-    <h1>{{ lead.contact_name or lead.profile_name or "Unnamed lead" }}</h1>
+    <h1>{{ lead.contact_name or lead.profile_name or "Unnamed job" }}</h1>
     <p>
       <span class="score {{ lead.score }}">{{ lead.score }}</span>
       {{ lead.score_reason }}
     </p>
   </header>
   {% if lead.handoff %}
-  <p class="callout">{{ handoff_label or "Handed to sales" }}</p>
+  <p class="callout">{{ handoff_label or "Handed to the electrician" }}</p>
+  {% endif %}
+  {% if send_error and send_error != "already_sent" %}
+  <p class="error">The quote was not sent ({{ send_error }}). It is still a draft.</p>
   {% endif %}
 
   <div class="detail-grid">
@@ -19,7 +22,7 @@
       <ol class="transcript">
         {% for message in messages %}
         <li class="bubble {{ 'out' if message.direction == 'out' else 'in' }}">
-          <span class="who">{{ "Maya" if message.direction == "out" else "Traveller" }}</span>
+          <span class="who">{{ business.assistant_name if message.direction == "out" else "Customer" }}</span>
           <p>{{ message.body }}</p>
           <time>{{ message.created_at }}</time>
         </li>
@@ -27,20 +30,83 @@
       </ol>
     </section>
     <section>
-      <h2>Structured lead</h2>
+      <h2>Job card</h2>
       <dl class="facts">
         <div><dt>WhatsApp id</dt><dd>{{ lead.wa_id }}</dd></div>
         <div><dt>Profile name</dt><dd>{{ lead.profile_name or "—" }}</dd></div>
-        <div><dt>Destination</dt><dd>{{ lead.destination or "—" }}</dd></div>
-        <div><dt>Dates</dt><dd>{{ lead.travel_dates or "—" }}</dd></div>
-        <div><dt>Group</dt><dd>{{ lead.group_size if lead.group_size is not none else "—" }}</dd></div>
-        <div><dt>Budget</dt><dd>{% if lead.budget_usd is not none %}${{ "%.0f"|format(lead.budget_usd) }}{% else %}—{% endif %}</dd></div>
-        <div><dt>Booking name</dt><dd>{{ lead.contact_name or "—" }}</dd></div>
+        <div><dt>Job</dt><dd>{{ lead.job_label or "—" }}</dd></div>
+        <div><dt>Suburb</dt><dd>{{ lead.suburb or "—" }}</dd></div>
+        <div><dt>Urgency</dt><dd>{{ lead.urgency or "—" }}</dd></div>
+        <div><dt>Description</dt><dd>{{ lead.description or "—" }}</dd></div>
+        <div><dt>Preferred time</dt><dd>{{ lead.preferred_time or "—" }}</dd></div>
+        <div><dt>Name</dt><dd>{{ lead.contact_name or "—" }}</dd></div>
         <div><dt>Ad</dt><dd>{{ lead.ad_headline or "—" }}</dd></div>
         <div><dt>Campaign</dt><dd>{{ lead.campaign or "—" }}</dd></div>
-        <div><dt>Ad id</dt><dd>{{ lead.ad_id or "—" }}</dd></div>
         <div><dt>Channel</dt><dd>{{ lead.source }}{% if lead.ad_source %} · {{ lead.ad_source }}{% endif %}</dd></div>
       </dl>
+
+      <h2>Visit</h2>
+      {% if lead.booking and lead.booking.status == "booked" %}
+      <p class="callout">Booked {{ lead.booking.label }}</p>
+      {% elif lead.booking and lead.booking.status == "offered" %}
+      <p>Offered, not booked yet.</p>
+      <ul>
+        {% for slot in lead.booking.slots %}
+        <li>{{ slot.label }}</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="meta">No visit offered yet.</p>
+      {% endif %}
+
+      <h2>Draft quote</h2>
+      {% if lead.quote and lead.quote.min_aud %}
+      <div class="quote-box">
+        <p><strong>${{ lead.quote.min_aud }}–${{ lead.quote.max_aud }} {{ business.currency }}</strong> — {{ lead.quote.basis }}</p>
+        <p class="meta">Status: {{ lead.quote.status }}{% if lead.quote.sent_via %} via {{ lead.quote.sent_via }}{% endif %}. Internal draft — not sent until you approve it.</p>
+        {% if lead.quote.status != "sent" %}
+        <form method="post" action="/staff/{{ lead.id }}/quote/approve">
+          <button type="submit">Approve and send quote</button>
+        </form>
+        {% endif %}
+      </div>
+      {% else %}
+      <p class="meta">No price band for this job type yet.</p>
+      {% endif %}
+
+      <h2>Photos</h2>
+      {% if lead.photos %}
+      <ul class="media-list">
+        {% for photo in lead.photos %}
+        <li>
+          Photo · media {{ photo.media_id }}
+          {% if photo.caption %} — {{ photo.caption }}{% endif %}
+          {% if photo.path %}
+          <a href="/staff/media/{{ lead.id }}/{{ photo.media_id }}">Open</a>
+          {% else %}
+          <span class="meta">({{ photo.status or "not downloaded" }})</span>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="meta">No photos.</p>
+      {% endif %}
+
+      <h2>Voice notes</h2>
+      {% if lead.voice_notes %}
+      <ul class="media-list">
+        {% for note in lead.voice_notes %}
+        <li>
+          <p><strong>Summary.</strong> {{ note.summary or "—" }}</p>
+          <p>{{ note.transcript }}</p>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="meta">No voice notes.</p>
+      {% endif %}
+
       <h2>Latest extraction JSON</h2>
       <pre class="json">{{ extracted }}</pre>
     </section>

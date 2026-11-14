@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
-logger = logging.getLogger("horizon.handoff")
+logger = logging.getLogger("tradie.handoff")
 
 
 class StaffNotifier(Protocol):
@@ -18,16 +18,17 @@ class StaffNotifier(Protocol):
 
 
 class LogNotifier:
-    """TODO: post `summary` to the agency Slack channel or email the desk."""
+    """TODO: post `summary` to the desk Slack channel or email the tradie."""
 
     def handoff(self, summary: dict) -> None:
         logger.info(
-            "HANDOFF lead=%s wa_id=%s score=%s reason=%s destination=%s",
+            "HANDOFF lead=%s wa_id=%s score=%s reason=%s job_type=%s suburb=%s",
             summary.get("lead_id"),
             summary.get("wa_id"),
             summary.get("score"),
             summary.get("reason"),
-            summary.get("destination"),
+            summary.get("job_type"),
+            summary.get("suburb"),
         )
 
 

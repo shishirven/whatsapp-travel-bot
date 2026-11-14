@@ -288,6 +288,69 @@ tr:hover td { background: #f7fbfa; }
 
 .error { color: var(--hot); font-size: 0.85rem; margin: 0.25rem 0; }
 
+.job-cards { display: flex; flex-direction: column; gap: 0.75rem; }
+
+.job-card, .login-card, .quote-box {
+  background: white;
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 1rem 1.1rem;
+}
+
+.job-card h2 { margin: 0.35rem 0; font-size: 1.05rem; }
+
+.job-card p { margin: 0.25rem 0; }
+
+.job-card-top, .quote-box { display: flex; flex-wrap: wrap; gap: 0.4rem 0.6rem; align-items: center; }
+
+.quote-box { display: block; margin-top: 0.4rem; background: #f7fbfa; }
+
+.quote-box button, .login-card button, .job-card button {
+  background: var(--green-2);
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  padding: 0.55rem 0.9rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.meta { color: var(--muted); font-size: 0.85rem; }
+
+.urgency {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 0.18rem 0.5rem;
+  background: #f2f4f7;
+}
+
+.urgency-emergency { background: #fee4e2; color: var(--hot); }
+.urgency-urgent { background: #fef0c7; color: var(--warm); }
+
+.login-page { max-width: 420px; }
+
+.login-card { display: flex; flex-direction: column; gap: 0.35rem; }
+
+.login-card h1 { margin: 0 0 0.25rem; }
+
+.login-card .field { padding: 0.4rem 0; }
+
+.text-button {
+  background: transparent;
+  color: var(--green-2);
+  border: 0;
+  padding: 0;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.media-list { padding-left: 1.1rem; }
+
+.media-list p { margin: 0.2rem 0; }
+
 @media (max-width: 960px) {
   .topbar { flex-wrap: wrap; gap: 0.55rem 1rem; }
   .brand { white-space: nowrap; }

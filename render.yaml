@@ -1,0 +1,48 @@
+# Paid Starter plan: the service stays awake. A free web service sleeps and
+# misses Meta webhook retries.
+services:
+  - type: web
+    name: tradie-whatsapp
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    dockerfilePath: ./Dockerfile
+    disk:
+      name: tradie-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: SQLITE_PATH
+        value: /data/tradie.db
+      - key: MESSAGING_PROVIDER
+        value: whatsapp
+      - key: LLM_PROVIDER
+        value: anthropic
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: PHONE_NUMBER_ID
+        sync: false
+      - key: VERIFY_TOKEN
+        sync: false
+      - key: APP_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: GOOGLE_CALENDAR_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_REFRESH_TOKEN
+        sync: false
+      - key: STAFF_USERNAME
+        sync: false
+      - key: STAFF_PASSWORD
+        sync: false
+      - key: STAFF_SESSION_SECRET
+        generateValue: true
