@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="page">
+  <header class="page-head">
+    <h1>Customers</h1>
+    <p>One customer can have several WhatsApp numbers and several jobs. Import a CSV with name, phone, address, and notes. Australian numbers are stored as WhatsApp digits.</p>
+    {% if auth_enabled %}
+    <form method="post" action="/staff/logout"><button type="submit" class="text-button">Sign out</button></form>
+    {% endif %}
+  </header>
+
+  <form method="post" action="/staff/customers/import" enctype="multipart/form-data" class="stack-form">
+    <label>Client CSV <input type="file" name="file" accept=".csv,text/csv" required></label>
+    <button type="submit">Import clients</button>
+  </form>
+  {% if import_result %}
+  <p class="callout">{{ import_result.message }}</p>
+  {% endif %}
+
+  {% if not customers %}
+  <p class="empty">No customers yet.</p>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Name</th><th>Numbers</th><th>Address</th><th>Jobs</th></tr>
+      </thead>
+      <tbody>
+        {% for customer in customers %}
+        <tr>
+          <td><a href="/staff/customers/{{ customer.id }}">{{ customer.name or "Unnamed customer" }}</a></td>
+          <td>{{ customer.numbers|join(", ") or "—" }}</td>
+          <td>{{ customer.addresses|join("; ") or "—" }}</td>
+          <td>{{ customer.job_count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

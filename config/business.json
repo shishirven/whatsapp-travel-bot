@@ -112,6 +112,10 @@
       }
     }
   ],
+  "source_tags": [
+    {"source": "website", "tags": ["(web)", "[web]"]},
+    {"source": "qr", "tags": ["(qr)", "[qr]"]}
+  ],
   "sample_ads": [
     {
       "ad_id": "ad_fault_01",

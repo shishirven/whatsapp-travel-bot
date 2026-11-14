@@ -47,6 +47,15 @@ from app.media import (
 from app.messaging import DeliveryError, Inbound, MessagingGateway
 from app.notify import StaffNotifier
 from app.quotes import customer_quote_text, draft_quote, scrub_prices
+from app.routing import (
+    KeywordIntentClassifier,
+    classify_source,
+    evaluate_soft_match,
+    is_status_question,
+    job_summary,
+    status_reply,
+    suburb_in_address,
+)
 from app.scoring import canonical_facts, handoff_decision, merge_facts, score_lead, wants_human
 from app.window import outbound_plan, parse_stored_time
 
@@ -75,8 +84,36 @@ _VOICE_UNAVAILABLE = (
 _SAFETY = "If anyone is in danger, or you can smell burning, get out and call 000."
 
 
-def build_system(known: dict, ad: dict | None, profile_name: str | None, business: Business | None = None) -> str:
+def build_system(
+    known: dict,
+    ad: dict | None,
+    profile_name: str | None,
+    business: Business | None = None,
+    *,
+    saved_address: str | None = None,
+    established: bool = False,
+) -> str:
     business = business or load_business()
+    if established and saved_address:
+        relationship = (
+            "This WhatsApp number is already a client. "
+            f"Saved address: {saved_address}. "
+            "Greet them by name and confirm that address. "
+            "Ask only for facts that are not already on file. "
+            "Do not mention prices, quotes, or any other customer's jobs."
+        )
+    elif established:
+        relationship = (
+            "This WhatsApp number is already a client. "
+            "Greet them by name if you know it, and ask only for facts that are not already on file. "
+            "Do not mention prices, quotes, or any other customer's jobs."
+        )
+    else:
+        relationship = (
+            "This WhatsApp number is not a confirmed existing client. "
+            "Do not say you recognise them. "
+            "Do not mention previous jobs, quotes, addresses, or bookings."
+        )
     if ad:
         ad_line = (
             f"This chat started from a {ad.get('source') or 'Meta'} ad "
@@ -104,6 +141,8 @@ Rules:
 - The ad is a hint, not a confirmed job.
 
 Ad context: {ad_line}
+
+{relationship}
 
 Facts already on file (JSON): {json.dumps(known, default=str)}
 
@@ -152,6 +191,7 @@ def start_simulated_chat(
         profile_name=profile_name,
         source="simulator",
         ad=ad,
+        job_source="ad" if ad else "organic",
     )
     reply = opening_text(business, ad, profile_name)
     _deliver_and_store(
@@ -162,6 +202,7 @@ def start_simulated_chat(
         purpose="session",
         last_customer_at=moment,
         now=moment,
+        job_id=conversation.get("active_job_id"),
     )
     snapshot = conversation_snapshot(db, conversation["id"], business)
     snapshot["reply"] = reply
@@ -186,35 +227,85 @@ def handle_incoming(
     media: MediaDownloader | None = None,
     transcriber: Transcriber | None = None,
     now: datetime | None = None,
+    intent=None,
 ) -> dict:
     business = business or load_business()
     moment = now or datetime.now(timezone.utc)
     if calendar is None:
         calendar = DatabaseCalendar(db)
+    if intent is None:
+        intent = KeywordIntentClassifier()
     if inbound.provider_message_id:
-        existing = db.get_message_by_provider_id(inbound.provider_message_id)
-        if existing:
-            snapshot = conversation_snapshot(db, existing["conversation_id"], business)
+        existing_message = db.get_message_by_provider_id(inbound.provider_message_id)
+        if existing_message:
+            snapshot = conversation_snapshot(db, existing_message["conversation_id"], business)
             snapshot["reply"] = None
             snapshot["delivery"] = "duplicate"
             snapshot["duplicate"] = True
             return snapshot
 
-    conversation = db.get_or_create_conversation(
-        wa_id=inbound.wa_id,
-        profile_name=inbound.profile_name,
-        source=inbound.source,
+    existing = db.get_conversation_by_wa(inbound.wa_id)
+    known_customer = db.get_customer_by_wa(inbound.wa_id)
+    source, cleaned = classify_source(
+        inbound.text,
+        inbound=inbound,
+        returning=known_customer is not None,
+        business=business,
     )
-    if inbound.ad_id and not conversation["ad_id"]:
-        conversation = db.attach_ad(conversation["id"], _resolved_ad(inbound, business))
-
-    lead = db.get_lead_for_conversation(conversation["id"])
+    ad = _resolved_ad(inbound, business) if inbound.ad_id or inbound.ad_headline else None
+    route = "follow_up"
+    if existing is None and known_customer is not None:
+        prefill, saved_address = _prefill_known(known_customer, business)
+        conversation = db.create_conversation(
+            wa_id=inbound.wa_id,
+            profile_name=inbound.profile_name,
+            source=inbound.source,
+            ad=ad,
+            job_source=source,
+            customer_id=known_customer["id"],
+            prefill=prefill,
+            address=saved_address,
+        )
+        lead = db.get_job(conversation["active_job_id"])
+        route = "returning"
+    elif existing is None:
+        conversation = db.create_conversation(
+            wa_id=inbound.wa_id,
+            profile_name=inbound.profile_name,
+            source=inbound.source,
+            ad=ad,
+            job_source=source,
+        )
+        lead = db.get_job(conversation["active_job_id"])
+        route = "new"
+    else:
+        conversation = existing
+        if inbound.profile_name and not conversation.get("profile_name"):
+            conversation = db.set_profile_name(conversation["id"], inbound.profile_name)
+        lead = db.get_open_job(conversation["id"])
+        if lead is None:
+            customer = db.get_customer(conversation["customer_id"])
+            prefill, saved_address = _prefill_known(customer, business)
+            lead = db.create_job(
+                customer_id=conversation["customer_id"],
+                conversation_id=conversation["id"],
+                source=source,
+                ad=ad,
+                contact_name=prefill.get("contact_name"),
+                suburb=prefill.get("suburb"),
+                address=saved_address,
+            )
+            conversation = db.set_status(conversation["id"], "open")
+            route = "returning"
     if lead is None:
-        raise RuntimeError(f"missing lead for conversation {conversation['id']}")
+        raise RuntimeError(f"missing job for conversation {conversation['id']}")
+
     photos = _load_json(lead.get("photos_json"), [])
     voice_notes = _load_json(lead.get("voice_json"), [])
     booking = _load_json(lead.get("booking_json"), {})
     quote = _load_json(lead.get("quote_json"), {})
+    photo_count = len(photos)
+    voice_count = len(voice_notes)
 
     text, photos, voice_notes, body = _ingest_media(
         inbound,
@@ -224,12 +315,43 @@ def handle_incoming(
         downloader=media,
         transcriber=transcriber,
     )
-    db.add_message(conversation["id"], "in", body, inbound.provider_message_id)
+    if inbound.message_type != "audio" and inbound.text:
+        text = cleaned.strip() if cleaned and cleaned.strip() else "Hi"
+    elif inbound.message_type == "audio":
+        pass
+
+    if route == "follow_up" and _starts_another_job(db, intent, lead, text, booking, moment):
+        customer = db.get_customer(conversation["customer_id"])
+        prefill, saved_address = _prefill_known(customer, business)
+        fresh_source, _ignored = classify_source(
+            inbound.text,
+            inbound=inbound,
+            returning=True,
+            business=business,
+        )
+        lead = db.create_job(
+            customer_id=conversation["customer_id"],
+            conversation_id=conversation["id"],
+            source=fresh_source,
+            ad=ad,
+            contact_name=prefill.get("contact_name"),
+            suburb=prefill.get("suburb"),
+            address=saved_address,
+        )
+        photos = photos[photo_count:]
+        voice_notes = voice_notes[voice_count:]
+        booking = {}
+        quote = {}
+        conversation = db.set_status(conversation["id"], "open")
+        route = "another"
+
+    db.add_message(conversation["id"], "in", body, inbound.provider_message_id, job_id=lead["id"])
     # The message we just stored is the customer's latest message, so a reply
     # in this turn is inside the 24-hour window.
     last_customer_at = parse_stored_time(db.last_inbound_at(conversation["id"])) or moment
+    opening = _opening_prefix(db, business, conversation, lead, route)
 
-    if conversation["status"] == "handed_off":
+    if route == "follow_up" and lead.get("handoff"):
         booked_reply, booking = _maybe_book(
             text, booking, business, calendar, lead, conversation, moment
         )
@@ -243,10 +365,26 @@ def handle_incoming(
             return _finish(
                 db, gateway, conversation, booked_reply, business,
                 purpose="booking_confirmation", last_customer_at=last_customer_at, now=moment,
+                job_id=lead["id"],
             )
+        if is_status_question(text):
+            reply = status_reply(lead, booking, quote)
+        elif inbound.message_type == "image":
+            reply = _PHOTO_ACK
+        elif inbound.message_type == "audio" and not text:
+            reply = _VOICE_UNAVAILABLE
+        else:
+            reply = _AFTER_HANDOFF
+        _save(
+            db, business, conversation, lead, photos, voice_notes, booking, quote,
+            facts=_facts_of(lead), score_label=lead["score"], score_reason=lead["score_reason"],
+            handoff=True, handoff_reason=lead.get("handoff_reason"),
+            raw=None,
+        )
         return _finish(
-            db, gateway, conversation, _AFTER_HANDOFF, business,
+            db, gateway, conversation, reply, business,
             purpose="session", last_customer_at=last_customer_at, now=moment,
+            job_id=lead["id"],
         )
 
     booked_reply, booking = _maybe_book(
@@ -264,20 +402,31 @@ def handle_incoming(
         if inbound.message_type == "audio":
             reply = _VOICE_UNAVAILABLE
         return _finish(
-            db, gateway, conversation, reply, business,
+            db, gateway, conversation, _with_opening(opening, reply), business,
             purpose="session", last_customer_at=last_customer_at, now=moment,
+            job_id=lead["id"],
         )
 
     known = _facts_of(lead)
-    history = history_for_model(db.list_messages(conversation["id"]))
-    ad = ad_out(conversation)
+    history = history_for_model(db.list_messages(conversation["id"], job_id=lead["id"]))
+    job_ad = _job_ad(lead)
+    customer = db.get_customer(lead["customer_id"])
+    established = _is_established(db, customer, lead["id"])
+    saved_address = _saved_address(customer) if established else None
     conversation = db.get_conversation(conversation["id"]) or conversation
     turn = TurnContext(
         history=history,
         known=known,
-        ad=ad,
+        ad=job_ad,
         profile_name=conversation.get("profile_name"),
-        system=build_system(known, ad, conversation.get("profile_name"), business),
+        system=build_system(
+            known,
+            job_ad,
+            conversation.get("profile_name"),
+            business,
+            saved_address=saved_address,
+            established=established,
+        ),
     )
     try:
         draft = qualifier.qualify(turn)
@@ -290,8 +439,9 @@ def handle_incoming(
             raw=None,
         )
         return _finish(
-            db, gateway, conversation, _APOLOGY, business,
+            db, gateway, conversation, _with_opening(opening, _APOLOGY), business,
             purpose="session", last_customer_at=last_customer_at, now=moment,
+            job_id=lead["id"],
         )
 
     facts = canonical_facts(merge_facts(known, draft.facts()), business)
@@ -302,7 +452,14 @@ def handle_incoming(
     reply = scrub_prices((draft.reply or "").strip()) or _APOLOGY
     if facts.get("urgency") == "emergency" and "000" not in reply:
         reply = f"{_SAFETY} {reply}"
-    if booked_reply:
+    soft_question = _apply_soft_match(
+        db, lead, facts, text, established=established
+    )
+    if soft_question and not booked_reply:
+        reply = soft_question
+        if facts.get("urgency") == "emergency" and "000" not in reply:
+            reply = f"{_SAFETY} {reply}"
+    elif booked_reply:
         reply = f"{booked_reply} {reply}".strip()
     elif _should_offer(facts, booking, business, moment):
         slots = available_slots(business, calendar, moment) if calendar is not None else []
@@ -311,6 +468,7 @@ def handle_incoming(
             reply = _with_offer(reply, slots, facts.get("preferred_time"))
     if handoff:
         reply = with_handoff_line(reply, business)
+    reply = scrub_prices(_with_opening(opening, reply)) or _APOLOGY
 
     saved = _save(
         db, business, conversation, lead, photos, voice_notes, booking, quote,
@@ -325,6 +483,7 @@ def handle_incoming(
     return _finish(
         db, gateway, conversation, reply, business,
         purpose=purpose, last_customer_at=last_customer_at, now=moment,
+        job_id=lead["id"],
     )
 
 
@@ -373,7 +532,7 @@ def approve_quote(
     quote = dict(quote)
     quote["status"] = "sent"
     quote["sent_via"] = plan["mode"]
-    db.add_message(conversation["id"], "out", stored, provider_id)
+    db.add_message(conversation["id"], "out", stored, provider_id, job_id=lead["id"])
     facts = _facts_of(lead)
     _save(
         db, business, conversation, lead,
@@ -459,7 +618,7 @@ def conversation_snapshot(db: Database, conversation_id: int, business: Business
         "wa_id": conversation["wa_id"],
         "profile_name": conversation["profile_name"],
         "status": conversation["status"],
-        "ad": ad_out(conversation),
+        "ad": _job_ad(lead) if lead and _job_ad(lead) else ad_out(conversation),
         "messages": [message_out(row) for row in messages],
         "lead": lead_out(lead, business) if lead else None,
     }
@@ -523,7 +682,13 @@ def lead_out(row: dict, business: Business | None = None) -> dict:
         "updated_at": row.get("updated_at"),
         "wa_id": row.get("wa_id"),
         "profile_name": row.get("profile_name"),
-        "source": row.get("source"),
+        "source": row.get("job_source") or row.get("source"),
+        "status": row.get("job_status") or row.get("status") or "open",
+        "customer_id": row.get("customer_id"),
+        "customer_name": row.get("customer_name"),
+        "address": row.get("address"),
+        "possible_customer_id": row.get("possible_customer_id"),
+        "possible_customer_name": row.get("possible_customer_name"),
         "ad_id": row.get("ad_id"),
         "campaign": row.get("campaign"),
         "ad_headline": row.get("ad_headline"),
@@ -542,10 +707,12 @@ def _finish(
     purpose: str,
     last_customer_at: datetime | None,
     now: datetime,
+    job_id: int | None = None,
 ) -> dict:
     _deliver_and_store(
         db, gateway, conversation, reply,
         purpose=purpose, last_customer_at=last_customer_at, now=now,
+        job_id=job_id,
     )
     snapshot = conversation_snapshot(db, conversation["id"], business)
     snapshot["reply"] = reply
@@ -556,6 +723,7 @@ def _finish(
 
 def _deliver_and_store(
     db, gateway, conversation, reply, *, purpose, last_customer_at, now, template_params=None,
+    job_id=None,
 ) -> None:
     provider_id, _status, stored = deliver_customer(
         gateway,
@@ -566,7 +734,7 @@ def _deliver_and_store(
         now=now,
         template_params=template_params,
     )
-    db.add_message(conversation["id"], "out", stored, provider_id)
+    db.add_message(conversation["id"], "out", stored, provider_id, job_id=job_id)
 
 
 def _ingest_media(inbound, photos, voice_notes, *, media_dir, downloader, transcriber):
@@ -709,8 +877,8 @@ def _save(
     db, business, conversation, lead, photos, voice_notes, booking, quote,
     *, facts, score_label, score_reason, handoff, handoff_reason, raw,
 ) -> dict:
-    return db.save_lead(
-        conversation["id"],
+    saved = db.save_job(
+        lead["id"],
         {
             **facts,
             "score": score_label,
@@ -734,6 +902,157 @@ def _save(
             ),
         },
     )
+    db.note_customer_facts(
+        saved["customer_id"],
+        contact_name=facts.get("contact_name"),
+        profile_name=conversation.get("profile_name"),
+        suburb=facts.get("suburb"),
+        address=saved.get("address"),
+    )
+    return saved
+
+
+def _starts_another_job(db, intent, lead, text, booking, moment) -> bool:
+    """True when an open job should stay put and this message starts a new one."""
+    if not text or not db.job_has_inbound(lead["id"]):
+        return False
+    if wants_human(text) or is_status_question(text):
+        return False
+    slots = offered_slots(booking, moment)
+    if slots and match_slot(text, slots) is not None:
+        return False
+    try:
+        return bool(intent.classify(text, job_summary=job_summary(lead)))
+    except Exception:
+        logger.exception("intent classify failed for job %s", lead.get("id"))
+        return False
+
+
+def _prefill_known(customer: dict | None, business: Business) -> tuple[dict, str | None]:
+    if not customer:
+        return {}, None
+    saved = _saved_address(customer)
+    facts: dict = {}
+    if customer.get("name") and (customer.get("name_confirmed") or customer.get("trusted")):
+        facts["contact_name"] = customer["name"]
+    suburb = suburb_in_address(saved, business) if saved else None
+    if suburb:
+        facts["suburb"] = suburb
+    return facts, saved
+
+
+def _saved_address(customer: dict | None) -> str | None:
+    if not customer:
+        return None
+    addresses = _load_json(customer.get("addresses_json"), [])
+    if isinstance(addresses, list) and addresses:
+        return str(addresses[0])
+    return None
+
+
+def _is_established(db: Database, customer: dict | None, job_id: int) -> bool:
+    if not customer:
+        return False
+    if customer.get("trusted"):
+        return True
+    return db.customer_has_other_job(customer["id"], job_id)
+
+
+def _apply_soft_match(db, lead, facts, text, *, established: bool) -> str | None:
+    if established:
+        return None
+    customer_id = lead.get("customer_id")
+    if not customer_id:
+        return None
+    soft = evaluate_soft_match(
+        name=facts.get("contact_name"),
+        suburb=facts.get("suburb"),
+        address=lead.get("address"),
+        text=text,
+        asked=bool(lead.get("prior_client_asked")),
+        answer=lead.get("prior_client_answer"),
+        address_prompted=bool(lead.get("address_prompted")),
+        candidates=db.list_match_candidates(customer_id),
+    )
+    if soft["answer"] == "no":
+        possible_id = None
+    elif soft["possible_customer_id"]:
+        possible_id = soft["possible_customer_id"]
+    else:
+        possible_id = lead.get("possible_customer_id")
+    db.set_soft_match(
+        lead["id"],
+        possible_customer_id=possible_id,
+        asked=soft["asked"],
+        answer=soft["answer"],
+        address_prompted=soft["address_prompted"],
+    )
+    return soft["question"]
+
+
+def _opening_prefix(db, business: Business, conversation, lead, route: str) -> str:
+    if any(message["direction"] == "out" for message in db.list_messages(job_id=lead["id"])):
+        return ""
+    parts: list[str] = []
+    customer = db.get_customer(lead["customer_id"])
+    if route == "returning" and customer:
+        parts.append(_returning_greeting(business, customer))
+    elif route == "another":
+        parts.append("I'll open this as a separate job.")
+    ad = _job_ad(lead)
+    if ad and ad.get("headline"):
+        source_name = ad.get("source") or "Meta"
+        campaign = ad.get("campaign")
+        bit = f'Thanks for tapping our {source_name} ad — "{ad["headline"]}"'
+        if campaign:
+            bit += f" ({campaign})"
+        parts.append(bit + ".")
+    return " ".join(parts).strip()
+
+
+def _returning_greeting(business: Business, customer: dict) -> str:
+    name = customer.get("name") or "there"
+    who = f"I'm {business.assistant_name} at {business.name}."
+    saved = _saved_address(customer)
+    if saved:
+        return (
+            f"Hi {name}! {who} "
+            f"I have {saved} saved — is that still the right address?"
+        )
+    return f"Hi {name}! {who}"
+
+
+def _with_opening(opening: str, reply: str) -> str:
+    opening = (opening or "").strip()
+    reply = (reply or "").strip()
+    if not opening:
+        return reply
+    kept = []
+    for sentence in re.split(r"(?<=[.!?])\s+", opening):
+        quoted = re.search(r'"([^"]+)"', sentence)
+        if quoted and quoted.group(1) in reply:
+            campaign = re.search(r"\(([^)]+)\)", sentence)
+            if campaign and campaign.group(1) not in reply:
+                kept.append(f"It came from the {campaign.group(1)} campaign.")
+            continue
+        if sentence and sentence in reply:
+            continue
+        kept.append(sentence)
+    opening = " ".join(kept).strip()
+    if not opening or opening in reply:
+        return reply
+    return f"{opening} {reply}".strip()
+
+
+def _job_ad(lead: dict | None) -> dict | None:
+    if not lead or not (lead.get("ad_id") or lead.get("ad_headline")):
+        return None
+    return {
+        "ad_id": lead.get("ad_id"),
+        "campaign": lead.get("campaign"),
+        "headline": lead.get("ad_headline"),
+        "source": lead.get("ad_source"),
+    }
 
 
 def _facts_of(lead: dict) -> dict:

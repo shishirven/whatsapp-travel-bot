@@ -31,6 +31,42 @@ flowchart TD
   Quote --> Desk
 ```
 
+## Routing
+
+Every inbound message goes through one decision, before intake:
+
+```mermaid
+flowchart TD
+  inbound[Inbound message]
+  inbound --> known{Number on file?}
+  known -->|No| fresh[New customer and job]
+  fresh --> tagged{Referral or source tag?}
+  tagged -->|Ad| adOpen[Open with the ad headline and campaign]
+  tagged -->|web or qr| tagOpen[Source website or qr]
+  tagged -->|Neither| organic[Source organic]
+  adOpen --> intake[Ask only what is missing]
+  tagOpen --> intake
+  organic --> intake
+  intake --> match{Name and address match one client?}
+  match -->|Yes| flag[Flag possible existing client and reveal nothing]
+  match -->|Unclear| ask[Ask once, then ask for an address]
+  known -->|Yes| openJob{Open job?}
+  openJob -->|Yes| intent{Clearly a new job?}
+  intent -->|No| follow[Follow up on that job and do not restart intake]
+  intent -->|Yes| another[Start a separate job]
+  openJob -->|No| greet[Greet by name, confirm the saved address, new job]
+```
+
+A number is known when it is already in `customer_numbers` — including clients imported from CSV. An open job is `open`, `quoted`, or `booked`. `completed` and `cancelled` are closed, so the next message starts a new job.
+
+Follow-up on an open job answers a status question from that job's booking, attaches a photo or voice note, or hands the chat to the tradie. It does not run the intake questions again after handoff. "Clearly a new job" is classified by Claude when `LLM_PROVIDER=anthropic`. With no key, a phrase list is the stand-in (`different job`, `another job`, and similar). Tests pass a fake classifier and never call Anthropic.
+
+Job source is one of `ad`, `organic`, `website`, `qr`, or `repeat`. A Meta referral is `ad`, and the first reply names the headline and campaign. A configured prefilled tag in `config/business.json` (`(web)`, `(qr)`, and whatever you add under `source_tags`) sets `website` or `qr` and is removed before the qualifier reads the text. A known number with neither is `repeat`. Anything else is `organic`.
+
+A brand-new number is not told that it matches anyone. If the name and address they give match exactly one saved customer, the job is flagged **possible existing client** for the desk. The bot does not say it knows them, and it does not mention that customer's other jobs, quotes, addresses, or bookings. If the name matches but the address does not, the bot may ask once: "Have we done work for you before?" A yes is followed by "What address did we do that work at?" Staff confirm the match by linking the number. Until then the number stays its own customer.
+
+## Scoring
+
 Scoring is not left to the model. `app/scoring.py` decides hot, warm, and cold from the business config.
 
 | Score | Rule |
@@ -39,7 +75,7 @@ Scoring is not left to the model. `app/scoring.py` decides hot, warm, and cold f
 | Warm | A job type is known, but the suburb is outside the service area, or urgency, description, or a name is still missing |
 | Hot | An emergency inside the service area, or a configured job type with an in-area suburb, urgency, description, and a name |
 
-Handoff happens when the score is hot, or when the customer asks for a person, at any score. After that the bot stops extracting. A slot the customer already picked can still be booked. One conversation is kept per phone number.
+Handoff happens when the score is hot, or when the customer asks for a person, at any score. After that the bot stops extracting on that job. A slot the customer already picked can still be booked. A later message that is clearly a new job starts intake again. One chat thread is kept per phone number. A customer can have several numbers and several jobs.
 
 Quotes are a min–max range from `config/business.json`. They are saved as drafts. The bot never puts a dollar amount in a customer reply. Someone on `/staff` approves the draft, and only then is it sent.
 
@@ -153,9 +189,20 @@ OAuth is the other path: a client id, secret, and refresh token that already has
 
 ## Staff desk
 
-`/staff` lists job cards: type, suburb, urgency, description, photos, voice-note transcript and summary, the offered or booked visit, and the draft quote. **Approve and send quote** is the only way a price leaves the building.
+`/staff` lists job cards: type, suburb, urgency, description, photos, voice-note transcript and summary, the offered or booked visit, the job status and source, and the draft quote. **Approve and send quote** is the only way a price leaves the building.
 
-Set `STAFF_USERNAME` and `STAFF_PASSWORD` before the Render URL is shared. With both set, every `/staff` page and the approve action require a session cookie. With either empty, the desk is open and a warning is logged — that is the local simulator only.
+`/staff/customers` lists each customer with their numbers, addresses, notes, and jobs. A job flagged as a possible existing client can be linked to that customer, which moves the new number and its jobs onto the saved record. On a job you can split a message onto a new job, move a message to another job of the same customer, or set the status to completed or cancelled.
+
+Import existing clients from the desk (CSV upload) or from the shell:
+
+```bash
+python -m app.import_clients clients.csv --dry-run
+python -m app.import_clients clients.csv
+```
+
+The file needs `name` and `phone` columns. `address` and `notes` are optional. Several numbers can sit in the phone cell, separated by `;` or `/`. `0412 345 678` is stored as `61412345678` — WhatsApp's country code plus number, with no plus sign. `--db` overrides `SQLITE_PATH`.
+
+Set `STAFF_USERNAME` and `STAFF_PASSWORD` before the Render URL is shared. With both set, every `/staff` page, the customer pages, the import, and the link, split, reassign, and approve actions require a session cookie. With either empty, the desk is open and a warning is logged — that is the local simulator only.
 
 ## 24-hour window
 
@@ -201,8 +248,12 @@ Then open `/staff`. With `APP_SECRET` set, compute `X-Hub-Signature-256` or the 
 | --- | --- |
 | `render.yaml` | Render Docker web service, Starter plan, health check, disk |
 | `config/business.json` | Trade, suburbs, hours, job types, draft price bands, sample ads |
-| `app/main.py` | Simulator, staff desk and login, quote approval, webhook |
-| `app/service.py` | One inbound turn: store, media, book, qualify, score, deliver |
+| `app/main.py` | Simulator, staff desk and login, customer view, quote approval, webhook |
+| `app/service.py` | One inbound turn: route, store, media, book, qualify, score, deliver |
+| `app/routing.py` | Job source, new-job classification, soft match |
+| `app/customers_io.py` | CSV import shared by the desk and the CLI |
+| `app/import_clients.py` | `python -m app.import_clients` |
+| `app/phones.py` | Australian numbers to WhatsApp digits |
 | `app/scoring.py` | Hot / warm / cold and the handoff decision |
 | `app/quotes.py` | Draft ranges and the price scrubber |
 | `app/booking.py` | Slot finder and the calendar interface |
@@ -218,6 +269,9 @@ Then open `/staff`. With `APP_SECRET` set, compute `X-Hub-Signature-256` or the 
 - Anthropic and OpenAI keys
 - A Google calendar shared with the service account, or an OAuth refresh token
 - Staff username and password
-- Your own business name, suburbs, job types, hours, and price bands in `config/business.json`
+- Your own business name, suburbs, job types, hours, price bands, and source tags in `config/business.json`
+- A backup of the SQLite file before the first deploy of this change. On startup, each existing conversation becomes a customer, one WhatsApp number, and one job. Job ids stay the same as the old lead ids. Finished historical jobs are still `open` until you mark them completed or cancelled — until you do, the next message from that number stays on the old job
+- A CSV of existing clients, if you want a known number to be greeted by name instead of treated as new
+- A look at any job flagged **possible existing client**, and a link when the number really is that customer
 
 There is no Twilio and no n8n in this app.
